@@ -594,6 +594,7 @@ void App::refreshStations() {
       stations_.push_back(v);
     }
   }
+  pullTimeline(multi_);
 }
 
 void App::decodeFileMulti(const std::string &path) {
@@ -632,6 +633,7 @@ void App::decodeFileMulti(const std::string &path) {
         stations_.push_back(v);
       }
     }
+    pullTimeline(md);
     morse_multi_destroy(md);
   }
 
@@ -1015,7 +1017,7 @@ void App::drawDecodeTab() {
         ImGui::TextDisabled(
             "Each detected station (by pitch) is decoded separately.");
       }
-      ImGui::BeginChild("stations", ImVec2(-1, 220), ImGuiChildFlags_Borders);
+      ImGui::BeginChild("stations", ImVec2(-1, 160), ImGuiChildFlags_Borders);
       for (const auto &s : stations_) {
         ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
                            "%.0f Hz  -  %.0f WPM", s.hz, s.wpm);
@@ -1027,6 +1029,9 @@ void App::drawDecodeTab() {
         ImGui::Separator();
       }
       ImGui::EndChild();
+
+      sectionLabel("Timeline (what was sent, in order)");
+      drawTimeline(150);
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -1397,5 +1402,64 @@ void App::drawTree() {
         }
       };
   rec("", 0, origin.y, origin.y + canvasH, origin.x, origin.y);
+  ImGui::EndChild();
+}
+
+// A stable-ish colour per station id for the timeline.
+static ImVec4 channelColor(int id) {
+  static const ImVec4 pal[6] = {
+      ImVec4(0.55f, 0.85f, 1.00f, 1.0f), ImVec4(0.60f, 0.90f, 0.60f, 1.0f),
+      ImVec4(1.00f, 0.80f, 0.45f, 1.0f), ImVec4(0.90f, 0.62f, 0.92f, 1.0f),
+      ImVec4(1.00f, 0.62f, 0.55f, 1.0f), ImVec4(0.60f, 0.85f, 0.85f, 1.0f)};
+  return pal[((id % 6) + 6) % 6];
+}
+
+void App::pullTimeline(morse_multi_detector_t *md) {
+  timeline_.clear();
+  if (md == nullptr) {
+    return;
+  }
+  size_t n = morse_multi_event_count(md);
+  for (size_t i = 0; i < n; ++i) {
+    morse_multi_event_t e;
+    if (morse_multi_get_event(md, i, &e)) {
+      timeline_.push_back(e);
+    }
+  }
+}
+
+// Chronological transcript across all stations: consecutive fragments from the
+// same station (without a long pause) are merged into one timestamped line, so
+// you can read who sent what, in order.
+void App::drawTimeline(float height) {
+  ImGui::BeginChild("timeline", ImVec2(-1, height), ImGuiChildFlags_Borders);
+  if (timeline_.empty()) {
+    ImGui::TextDisabled("Chronological transcript across all stations.");
+  } else {
+    size_t i = 0;
+    while (i < timeline_.size()) {
+      int id = timeline_[i].channel_id;
+      double hz = timeline_[i].tone_hz;
+      double t0 = timeline_[i].t_seconds;
+      double lastT = t0;
+      std::string line;
+      while (i < timeline_.size() && timeline_[i].channel_id == id &&
+             timeline_[i].t_seconds - lastT < 3.0) {
+        line += timeline_[i].text;
+        lastT = timeline_[i].t_seconds;
+        ++i;
+      }
+      int mm = (int)(t0 / 60.0);
+      int ss = (int)t0 % 60;
+      ImGui::TextColored(channelColor(id), "[%02d:%02d] %4.0f Hz", mm, ss, hz);
+      ImGui::SameLine();
+      ImGui::PushTextWrapPos(0.0f);
+      ImGui::TextUnformatted(line.c_str());
+      ImGui::PopTextWrapPos();
+    }
+    if (capturing_) {
+      ImGui::SetScrollHereY(1.0f); // follow live
+    }
+  }
   ImGui::EndChild();
 }

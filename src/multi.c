@@ -11,6 +11,8 @@
 #include <string.h>
 
 #define MORSE_MULTI_MAX 32
+#define MORSE_MULTI_PENDING 32
+#define MORSE_MULTI_EVENTS 4096
 
 typedef struct {
   int used;
@@ -23,6 +25,14 @@ typedef struct {
   struct morse_multi_detector *parent; /* for the per-channel sink trampoline */
 } multi_channel_t;
 
+/* A peak that has been seen but not yet promoted to a channel. */
+typedef struct {
+  int used;
+  double tone_hz;
+  int hits;
+  long long last_seen;
+} multi_pending_t;
+
 struct morse_multi_detector {
   const morse_table_t *table;
   unsigned int rate;
@@ -31,6 +41,7 @@ struct morse_multi_detector {
   void *user;
 
   multi_channel_t ch[MORSE_MULTI_MAX]; /* fixed so channel addresses are stable */
+  multi_pending_t pending[MORSE_MULTI_PENDING];
   int next_id;
 
   float *abuf; /* rolling analysis window, capacity = win */
@@ -39,7 +50,14 @@ struct morse_multi_detector {
   unsigned int hop;
   long long total;
   long long last_analysis;
-  double *mag; /* scratch, win/2 doubles */
+  long long gate_samples; /* how long a channel stays "open" after a peak */
+  double *mag;            /* scratch, win/2 doubles */
+  float *silence;         /* zero buffer, length hop, for gating closed channels */
+
+  /* timeline */
+  morse_multi_event_t events[MORSE_MULTI_EVENTS];
+  size_t event_head; /* next write index */
+  size_t event_n;    /* number stored (<= MORSE_MULTI_EVENTS) */
 };
 
 void morse_multi_opts_default(morse_multi_opts_t *o) {
@@ -54,20 +72,37 @@ void morse_multi_opts_default(morse_multi_opts_t *o) {
   o->peak_ratio = 5.0;
   o->merge_hz = 100.0;
   o->active_seconds = 1.5;
+  o->gate_seconds = 0.0; /* auto */
+  o->min_hits = 2;
 }
 
 /* Per-channel decode sink: append to the channel transcript and forward to the
  * user sink, tagged with the channel id and frequency. `user` is the channel. */
 static void channel_sink(const char *utf8, void *user) {
   multi_channel_t *c = (multi_channel_t *)user;
+  morse_multi_detector_t *d;
   if (utf8 == NULL || c == NULL) {
     return;
   }
+  d = c->parent;
   if (c->text != NULL) {
     ds_str_append_cstr(c->text, utf8);
   }
-  if (c->parent != NULL && c->parent->sink != NULL) {
-    c->parent->sink(c->id, c->tone_hz, utf8, c->parent->user);
+  /* record a timeline event (ring buffer) */
+  if (d != NULL) {
+    morse_multi_event_t *e = &d->events[d->event_head];
+    e->t_seconds = d->rate ? (double)d->total / (double)d->rate : 0.0;
+    e->channel_id = c->id;
+    e->tone_hz = c->tone_hz;
+    strncpy(e->text, utf8, sizeof(e->text) - 1);
+    e->text[sizeof(e->text) - 1] = '\0';
+    d->event_head = (d->event_head + 1) % MORSE_MULTI_EVENTS;
+    if (d->event_n < MORSE_MULTI_EVENTS) {
+      d->event_n++;
+    }
+    if (d->sink != NULL) {
+      d->sink(c->id, c->tone_hz, utf8, d->user);
+    }
   }
 }
 
@@ -112,7 +147,7 @@ static int spawn_channel(morse_multi_detector_t *d, double freq, double snr) {
     morse_detect_opts_default(&o);
     o.tone_hz = freq;   /* lock this channel to the detected pitch */
     o.track_tone = 0;   /* keep stations from drifting into each other */
-    o.block_size = 256;
+    o.block_size = 512; /* narrower Goertzel => less cross-frequency leakage */
     c->parent = d;
     c->det = morse_detector_create(d->table, d->rate, &o, channel_sink, c);
     if (c->det == NULL) {
@@ -229,7 +264,7 @@ static void analyze(morse_multi_detector_t *d) {
       if (suppressed) {
         continue;
       }
-      /* match to an existing channel or spawn a new one */
+      /* match to an existing channel, else require persistence before spawning */
       matched = 0;
       {
         int c;
@@ -245,7 +280,50 @@ static void analyze(morse_multi_detector_t *d) {
         }
       }
       if (!matched) {
-        spawn_channel(d, cand_f[i], cand_s[i]);
+        /* Find or create a pending candidate; spawn only once it has been seen
+         * in enough consecutive analyses to be a real station, not a glitch. */
+        int p, slot = -1, free_slot = -1;
+        for (p = 0; p < MORSE_MULTI_PENDING; ++p) {
+          if (d->pending[p].used &&
+              fabs(d->pending[p].tone_hz - cand_f[i]) <= d->opts.merge_hz) {
+            slot = p;
+            break;
+          }
+          if (!d->pending[p].used && free_slot < 0) {
+            free_slot = p;
+          }
+        }
+        if (slot < 0) {
+          slot = free_slot;
+          if (slot >= 0) {
+            d->pending[slot].used = 1;
+            d->pending[slot].tone_hz = cand_f[i];
+            d->pending[slot].hits = 0;
+          }
+        }
+        if (slot >= 0) {
+          d->pending[slot].hits++;
+          d->pending[slot].last_seen = d->total;
+          d->pending[slot].tone_hz =
+              0.7 * d->pending[slot].tone_hz + 0.3 * cand_f[i];
+          if (d->pending[slot].hits >= d->opts.min_hits) {
+            if (spawn_channel(d, d->pending[slot].tone_hz, cand_s[i]) >= 0) {
+              d->pending[slot].used = 0;
+            }
+          }
+        }
+      }
+    }
+
+    /* Age out pending candidates that stopped appearing. */
+    {
+      int p;
+      for (p = 0; p < MORSE_MULTI_PENDING; ++p) {
+        if (d->pending[p].used &&
+            (double)(d->total - d->pending[p].last_seen) >
+                2.0 * (double)d->hop) {
+          d->pending[p].used = 0;
+        }
       }
     }
   }
@@ -292,30 +370,46 @@ morse_multi_detector_t *morse_multi_create(const morse_table_t *table,
   d->user = user;
   d->next_id = 1;
 
+  /* A short analysis window: ~50 ms gives good time resolution for gating while
+   * its FFT (≈20 Hz bins) still separates stations cleanly. */
   d->win = d->opts.win;
   if (d->win == 0) {
-    d->win = (unsigned int)morse_floor_pow2((size_t)(sample_rate * 0.2));
+    d->win = (unsigned int)morse_floor_pow2((size_t)(sample_rate * 0.05));
   }
-  if (d->win < 2048) {
-    d->win = 2048;
+  if (d->win < 1024) {
+    d->win = 1024;
   }
-  if (d->win > 16384) {
-    d->win = 16384;
+  if (d->win > 8192) {
+    d->win = 8192;
   }
   d->win = (unsigned int)morse_floor_pow2(d->win);
   d->hop = d->opts.hop;
   if (d->hop == 0) {
-    d->hop = (unsigned int)(sample_rate * 0.05);
+    d->hop = d->win / 4; /* 75% overlap => responsive gating */
   }
   if (d->hop == 0) {
-    d->hop = 512;
+    d->hop = 256;
+  }
+
+  /* How long a channel keeps decoding after its last peak. Long enough to
+   * bridge the gaps *within* a transmission (so an active station is never
+   * chopped), but finite so a channel that has truly gone quiet stops decoding
+   * before a strong neighbour can leak into it. */
+  {
+    double gs = d->opts.gate_seconds > 0.0 ? d->opts.gate_seconds : 0.8;
+    d->gate_samples = (long long)(gs * sample_rate);
+    if (d->gate_samples < (long long)d->hop * 2) {
+      d->gate_samples = (long long)d->hop * 2;
+    }
   }
 
   d->abuf = (float *)morse_xmalloc(sizeof(float) * d->win);
   d->mag = (double *)morse_xmalloc(sizeof(double) * (d->win / 2));
-  if (d->abuf == NULL || d->mag == NULL) {
+  d->silence = (float *)morse_xcalloc(d->hop, sizeof(float));
+  if (d->abuf == NULL || d->mag == NULL || d->silence == NULL) {
     morse_xfree(d->abuf);
     morse_xfree(d->mag);
+    morse_xfree(d->silence);
     morse_xfree(d);
     return NULL;
   }
@@ -342,6 +436,7 @@ void morse_multi_destroy(morse_multi_detector_t *d) {
   }
   morse_xfree(d->abuf);
   morse_xfree(d->mag);
+  morse_xfree(d->silence);
   morse_xfree(d);
 }
 
@@ -373,10 +468,18 @@ morse_status_t morse_multi_process(morse_multi_detector_t *d,
       d->abuf_len += step;
     }
 
-    /* feed every live channel this chunk */
+    /* Feed each live channel this chunk, but only while it is "open" - i.e. it
+     * had a peak within the gate window. A channel that has gone quiet is fed
+     * silence instead, so a strong station on another frequency cannot bleed
+     * through its (necessarily wide) Goertzel filter and produce garbage. */
     for (c = 0; c < MORSE_MULTI_MAX && c < d->opts.max_channels; ++c) {
       if (d->ch[c].used && d->ch[c].det != NULL) {
-        morse_detector_process(d->ch[c].det, samples + i, step, NULL);
+        int open = (d->total - d->ch[c].last_active) <= d->gate_samples;
+        if (open) {
+          morse_detector_process(d->ch[c].det, samples + i, step, NULL);
+        } else {
+          morse_detector_process(d->ch[c].det, d->silence, step, NULL);
+        }
       }
     }
 
@@ -474,4 +577,22 @@ const char *morse_multi_channel_text(const morse_multi_detector_t *d,
     return NULL;
   }
   return FUNC_str_cstr(d->ch[order[index]].text);
+}
+
+/* ---- timeline ------------------------------------------------------------ */
+
+size_t morse_multi_event_count(const morse_multi_detector_t *d) {
+  return d != NULL ? d->event_n : 0;
+}
+
+int morse_multi_get_event(const morse_multi_detector_t *d, size_t index,
+                          morse_multi_event_t *out) {
+  size_t start;
+  if (d == NULL || out == NULL || index >= d->event_n) {
+    return 0;
+  }
+  /* event_head points just past the newest; oldest is head - event_n. */
+  start = (d->event_head + MORSE_MULTI_EVENTS - d->event_n) % MORSE_MULTI_EVENTS;
+  *out = d->events[(start + index) % MORSE_MULTI_EVENTS];
+  return 1;
 }

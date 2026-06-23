@@ -56,6 +56,8 @@ private:
   void stopCapture();
   void decodeFileMulti(const std::string &path);
   void refreshStations();
+  void pullTimeline(morse_multi_detector_t *md);
+  void drawTimeline(float height);
   void drawTree();
   void startKeyer();
   void stopKeyer();
@@ -148,6 +150,7 @@ private:
     std::string text;
   };
   std::vector<StationView> stations_;
+  std::vector<morse_multi_event_t> timeline_; // chronological cross-station log
   bool tree_view_ = true; // Reference tab: tree vs table
 
   // CW interface panel

@@ -467,6 +467,43 @@ static int cmd_stations(int argc, char **argv, int pos, const cli_opts *o) {
              txt != NULL ? txt : "");
     }
   }
+
+  /* Chronological transcript across stations: merge consecutive fragments from
+   * the same station (without a long pause) into one timestamped line. */
+  {
+    size_t ne = morse_multi_event_count(md);
+    if (ne > 0) {
+      size_t e = 0;
+      printf("\ntimeline:\n");
+      while (e < ne) {
+        morse_multi_event_t ev;
+        char line[256];
+        size_t p = 0;
+        int id;
+        double hz, t0, lastT;
+        if (!morse_multi_get_event(md, e, &ev)) {
+          break;
+        }
+        id = ev.channel_id;
+        hz = ev.tone_hz;
+        t0 = ev.t_seconds;
+        lastT = t0;
+        line[0] = '\0';
+        while (e < ne && morse_multi_get_event(md, e, &ev) &&
+               ev.channel_id == id && ev.t_seconds - lastT < 3.0) {
+          size_t k = 0;
+          while (ev.text[k] != '\0' && p + 1 < sizeof(line)) {
+            line[p++] = ev.text[k++];
+          }
+          line[p] = '\0';
+          lastT = ev.t_seconds;
+          ++e;
+        }
+        printf("  [%02d:%02d] %4.0f Hz  %s\n", (int)(t0 / 60.0), (int)t0 % 60,
+               hz, line);
+      }
+    }
+  }
   morse_multi_destroy(md);
   morse_table_destroy(t);
   morse_pcm_free(&pcm);

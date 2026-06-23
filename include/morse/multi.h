@@ -35,6 +35,11 @@ typedef struct morse_multi_opts {
   double peak_ratio;      /* a peak must exceed this * band-mean (0 => 4.0)   */
   double merge_hz;        /* peaks closer than this are one station (0 => 60) */
   double active_seconds;  /* a channel counts as "active" if seen within this */
+  double gate_seconds;    /* decode a channel only while peaked within this    */
+                          /* window; suppresses cross-frequency leakage        */
+                          /* (0 => a small default ~0.12s)                     */
+  int min_hits;           /* analyses a new peak must persist before a channel  */
+                          /* is created, rejecting transient ghosts (0 => 2)   */
 } morse_multi_opts_t;
 
 void morse_multi_opts_default(morse_multi_opts_t *opts);
@@ -80,6 +85,25 @@ int morse_multi_get_channel(const morse_multi_detector_t *d, size_t index,
  * index is out of range. */
 const char *morse_multi_channel_text(const morse_multi_detector_t *d,
                                      size_t index);
+
+/* ---- timeline -----------------------------------------------------------
+ *
+ * Every decoded fragment is also recorded, in order, with the time it was
+ * produced, so a caller can show what was sent before what across all stations.
+ */
+typedef struct morse_multi_event {
+  double t_seconds; /* time from the start of the stream                      */
+  int channel_id;   /* which station produced it                              */
+  double tone_hz;   /* that station's frequency                               */
+  char text[8];     /* the decoded fragment (usually one character)          */
+} morse_multi_event_t;
+
+/* Number of recorded events (capped at an internal ring size; oldest dropped). */
+size_t morse_multi_event_count(const morse_multi_detector_t *d);
+
+/* Fetch event `index` (0 = oldest available). Returns 0 if out of range. */
+int morse_multi_get_event(const morse_multi_detector_t *d, size_t index,
+                          morse_multi_event_t *out_event);
 
 #ifdef __cplusplus
 }

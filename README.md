@@ -38,9 +38,11 @@ every byte it allocates.
   so it locks onto whatever pitch is present and can follow drift. Works across
   a wide configurable band and on noisy signals.
 - **Decode many stations at once** — a rolling FFT finds every active tone peak
-  and dedicates an independent decoder to each, with non-maximum suppression to
-  reject spectral-leakage ghosts. Each station gets its own frequency lock,
-  threshold, and speed estimate, and is transcribed in parallel.
+  and dedicates an independent narrow-band decoder to each, with non-maximum
+  suppression and per-channel gating so spectral-leakage ghosts and bleed-through
+  are rejected. Each station gets its own frequency lock, threshold, and speed
+  estimate, is transcribed in parallel, and every fragment is timestamped onto a
+  shared timeline so you can see what was sent before what.
 - **Decode live audio** — from a chosen **input device**, or from **system
   output** (the default: WASAPI loopback on Windows; an auto-selected monitor /
   "Stereo Mix" input elsewhere).
@@ -235,7 +237,8 @@ A single tabbed workspace (no scattered windows) with a persistent status bar:
   file (`.wav`, or any format via ffmpeg), or listen live. Input defaults to the
   **system's audio output**, with device selection and a real-time FFT spectrum.
   Every detected station is listed separately with its pitch, speed, and
-  transcript, so overlapping signals are pulled apart automatically.
+  transcript, and a colour-coded **timeline** shows what each station sent in
+  chronological order — so overlapping signals are pulled apart automatically.
 - **Keyer** — straight key or **iambic paddle** (Curtis A/B); hold `SPACE`
   (straight) or `Z`/`X` (paddles), hear click-free sidetone, and watch the
   streaming decode with a live WPM estimate.
@@ -268,12 +271,18 @@ band, the Titanic distress traffic — have several operators keying at once on
 different frequencies. morsw watches the whole band with a rolling FFT, finds
 the active tone peaks each hop, applies non-maximum suppression so the spectral
 skirts of a strong carrier do not spawn phantom stations, and dedicates an
-independent fixed-tone decoder to each real peak. A newly found station is
-seeded with the buffered analysis window so its opening characters are not lost
-to detection latency, and each decoder keeps its own adaptive threshold and
-speed estimate. Use it from the CLI with `morsec stations FILE.wav`, or in the
-GUI's Decode → From audio tab (live or from a file), where each station shows up
-as its own pitch / speed / transcript row.
+independent narrow-band decoder to each real peak. A newly found station must
+persist across a couple of analyses before it is created (rejecting glitches),
+and is seeded with the buffered analysis window so its opening characters are
+not lost to detection latency. Each channel only decodes while its own tone is
+actually present, so a strong station on one frequency cannot bleed into an idle
+neighbour and fill it with garbage. Every decoded fragment is also stamped with
+the time it was sent and recorded on a shared **timeline**, so you can read what
+each station sent, in order. Use it from the CLI with `morsec stations
+FILE.wav` (which prints both the per-station transcripts and the merged
+timeline), or in the GUI's Decode → From audio tab (live or from a file), where
+each station shows up as its own pitch / speed / transcript row above a
+chronological, colour-coded timeline.
 
 ## Interfacing with CW gear
 

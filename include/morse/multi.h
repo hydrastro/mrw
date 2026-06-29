@@ -45,6 +45,15 @@ typedef struct morse_multi_opts {
                           /* which is what you want when stations take turns;   */
                           /* set higher (or <=0 for no limit) to decode several */
                           /* genuinely simultaneous stations in parallel.       */
+  int min_keys;           /* on/off keying events a channel must show before it */
+                          /* is believed to be real CW, not a noise blip        */
+                          /* (0 => 4). Rejects the stray "E"/"T" from noise.    */
+  double max_mark_seconds;/* a tone held longer than this is a carrier / hum /  */
+                          /* music note, not a keyed CW mark, and is ignored    */
+                          /* (0 => 0.9s).                                       */
+  double squelch_snr;     /* per-station SNR (linear) a mark must clear over the */
+                          /* noise to be decoded (0 => 4.5). Higher rejects more */
+                          /* noise; lower copies weaker signals.                */
 } morse_multi_opts_t;
 
 void morse_multi_opts_default(morse_multi_opts_t *opts);

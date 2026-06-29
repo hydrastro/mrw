@@ -16,6 +16,7 @@
 #include "morse/synth.h"
 #include "morse/detect.h"
 #include "morse/fft.h"
+#include "morse/filter.h"
 #include "morse/multi.h"
 #include "morse/wav.h"
 #include "morse/cw.h"

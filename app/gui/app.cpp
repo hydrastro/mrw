@@ -13,6 +13,9 @@
 #include <functional>
 #include <string>
 
+static ImVec4 channelColor(int id); // defined below; used by the decode tab
+
+
 namespace {
 
 // Sink shared by the live keyer decoder and the capture detector: append the
@@ -423,6 +426,7 @@ void App::startCapture() {
   mo.tone_min_hz = tone_min_;
   mo.tone_max_hz = tone_max_;
   mo.max_active = simultaneous_ ? 0 : 1;
+  mo.squelch_snr = squelch_snr_;
   multi_ = morse_multi_create(table_, static_cast<unsigned int>(rate_), &mo,
                               nullptr, nullptr);
   bool ok = multi_ != nullptr &&
@@ -433,6 +437,8 @@ void App::startCapture() {
     spectrum_src_.clear();
     wf_rows_.clear();
     wf_peak_ = 1e-6f;
+    wf_follow_ = true;
+    filter_ready_ = false; // rebuild filter state fresh for this session
     status_ = use_loopback_ ? "listening to system audio (loopback)"
                             : "listening on selected input";
   } else {
@@ -551,6 +557,7 @@ void App::onFrame() {
   if (capturing_ && multi_ != nullptr) {
     cap_scratch_.clear();
     if (audio_.drainCapture(cap_scratch_) > 0) {
+      applyFilter(cap_scratch_.data(), cap_scratch_.size(), true);
       morse_multi_process(multi_, cap_scratch_.data(), cap_scratch_.size());
       // crude live power for the meter: peak magnitude of this chunk
       float power = 0.0f;
@@ -615,11 +622,15 @@ void App::decodeFileMulti(const std::string &path) {
   }
   rate_ = static_cast<int>(pcm.sample_rate);
 
+  // clean the audio (band-pass) before everything else sees it
+  applyFilter(pcm.samples, pcm.count, false);
+
   morse_multi_opts_t mo;
   morse_multi_opts_default(&mo);
   mo.tone_min_hz = tone_min_;
   mo.tone_max_hz = tone_max_;
   mo.max_active = simultaneous_ ? 0 : 1;
+  mo.squelch_snr = squelch_snr_;
   morse_multi_detector_t *md =
       morse_multi_create(table_, pcm.sample_rate, &mo, nullptr, nullptr);
   if (md != nullptr) {
@@ -988,18 +999,59 @@ void App::drawDecodeTab() {
     }
 
     if (ImGui::BeginTabItem("From audio")) {
-      sectionLabel("Tone detection (handles any pitch)");
-      ImGui::PushItemWidth(200);
-      ImGui::SliderFloat("Manual tone (Hz)", &manual_tone_, 0.0f, 2000.0f,
-                         manual_tone_ < 1.0f ? "auto" : "%.0f");
-      ImGui::SliderFloat("Band min (Hz)", &tone_min_, 50.0f, 1500.0f, "%.0f");
-      ImGui::SliderFloat("Band max (Hz)", &tone_max_, 500.0f, 6000.0f, "%.0f");
-      ImGui::PopItemWidth();
-      ImGui::Checkbox("Track pitch drift", &track_tone_);
+      const ImVec4 accent(0.45f, 0.78f, 1.0f, 1.0f);
 
-      sectionLabel("File");
-      ImGui::PushItemWidth(420);
-      ImGui::InputText("##path", path_buf_.data(), path_buf_.size());
+      // ---- source + mode control bar ------------------------------------
+      bool restart = drawDeviceSelector();
+      bool cap = capturing_;
+      if (ImGui::Checkbox("Listen", &cap)) {
+        if (cap) {
+          startCapture();
+        } else {
+          stopCapture();
+        }
+      } else if (restart && capturing_) {
+        startCapture();
+      }
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Simultaneous", &simultaneous_)) {
+        if (capturing_) {
+          startCapture();
+        } else if (!std::string(path_buf_.data()).empty() &&
+                   !stations_.empty()) {
+          decodeFileMulti(path_buf_.data());
+        }
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("(?)");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Off: follow only the strongest tone at a time - best when "
+            "stations take turns.\nOn: decode several overlapping stations "
+            "in parallel.");
+      }
+      ImGui::SameLine();
+      ImGui::Spacing();
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Band-pass", &filter_on_)) {
+        if (capturing_) {
+          startCapture();
+        } else if (!std::string(path_buf_.data()).empty() &&
+                   !stations_.empty()) {
+          decodeFileMulti(path_buf_.data());
+        }
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("(?)");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Keep only the watched band, removing rumble, hiss "
+                          "and out-of-band interference before decoding.");
+      }
+
+      // ---- file row -----------------------------------------------------
+      ImGui::PushItemWidth(360);
+      ImGui::InputTextWithHint("##path", "path to a .wav (or any file via ffmpeg)",
+                               path_buf_.data(), path_buf_.size());
       ImGui::PopItemWidth();
       ImGui::SameLine();
       if (ImGui::Button("Decode file")) {
@@ -1014,69 +1066,79 @@ void App::drawDecodeTab() {
         }
       }
       ImGui::SameLine();
-      if (ImGui::Button("Play loaded")) {
+      if (ImGui::Button("Play")) {
         audio_.play(pcm_);
       }
-
-      sectionLabel("Live (microphone / system audio)");
-      bool restart = drawDeviceSelector();
-      bool cap = capturing_;
-      if (ImGui::Checkbox("Listen", &cap)) {
-        if (cap) {
-          startCapture();
-        } else {
-          stopCapture();
-        }
-      } else if (restart && capturing_) {
-        startCapture();
-      }
       ImGui::SameLine();
-      if (ImGui::Checkbox("Simultaneous stations", &simultaneous_)) {
-        if (capturing_) {
-          startCapture(); // rebuild detector in the new mode
-        } else if (!std::string(path_buf_.data()).empty() && !stations_.empty()) {
-          decodeFileMulti(path_buf_.data());
-        }
-      }
-      ImGui::SameLine();
-      ImGui::TextDisabled("(?)");
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-            "Off: follow only the strongest tone at a time - best when "
-            "stations take turns.\nOn: decode several overlapping stations "
-            "in parallel.");
-      }
-
-      sectionLabel("Tone view");
       ImGui::Checkbox("Waterfall", &show_waterfall_);
-      drawSpectrum(80);
-      if (show_waterfall_) {
-        drawWaterfall(190);
-      }
-      if (capturing_) {
-        ImGui::ProgressBar(std::min(1.0f, live_power_), ImVec2(-1, 0), "level");
+
+      // ---- collapsible tuning -------------------------------------------
+      if (ImGui::CollapsingHeader("Tuning")) {
+        ImGui::PushItemWidth(220);
+        ImGui::SliderFloat("Band min (Hz)", &tone_min_, 50.0f, 1500.0f, "%.0f");
+        ImGui::SliderFloat("Band max (Hz)", &tone_max_, 500.0f, 6000.0f, "%.0f");
+        ImGui::SliderInt("Filter steepness", &filter_order_, 2, 8);
+        if (ImGui::SliderFloat("Squelch (SNR)", &squelch_snr_, 1.5f, 12.0f,
+                               "%.1f")) {
+          if (capturing_) {
+            startCapture();
+          } else if (!std::string(path_buf_.data()).empty() &&
+                     !stations_.empty()) {
+            decodeFileMulti(path_buf_.data());
+          }
+        }
+        ImGui::PopItemWidth();
+        ImGui::TextDisabled("The band-pass and the detector both use this range. "
+                            "Narrow it onto a station to clean things up.");
+        ImGui::TextDisabled("Squelch sets how far a tone must rise above the "
+                            "noise to count - raise it if idle channels fill "
+                            "with stray dits and dashes.");
       }
 
-      sectionLabel("Stations");
-      if (stations_.empty()) {
-        ImGui::TextDisabled(
-            "Each detected station (by pitch) is decoded separately.");
+      ImGui::Separator();
+
+      // ---- spectrum + waterfall (the SDR view) --------------------------
+      drawSpectrum(58);
+      float bottomH = 220.0f;
+      float wfH = ImGui::GetContentRegionAvail().y - bottomH - 10.0f;
+      if (wfH < 120.0f) {
+        wfH = 120.0f;
       }
-      ImGui::BeginChild("stations", ImVec2(-1, 140), ImGuiChildFlags_Borders);
+      if (show_waterfall_) {
+        drawWaterfall(wfH);
+      } else {
+        bottomH = ImGui::GetContentRegionAvail().y; // give panes the space
+      }
+
+      // ---- bottom: stations (left) | chat log (right) -------------------
+      float fullW = ImGui::GetContentRegionAvail().x;
+      float leftW = fullW * 0.42f;
+      ImGui::BeginChild("stationsPane", ImVec2(leftW, bottomH),
+                        ImGuiChildFlags_Borders);
+      ImGui::TextColored(accent, "Stations  -  full transcript so far");
+      ImGui::Separator();
+      if (stations_.empty()) {
+        ImGui::TextDisabled("Detected stations appear here, each with its own "
+                            "pitch, speed and running text.");
+      }
       for (const auto &s : stations_) {
-        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
-                           "%.0f Hz  -  %.0f WPM", s.hz, s.wpm);
-        ImGui::SameLine();
-        ImGui::TextDisabled("(#%d)", s.id);
+        ImGui::TextColored(channelColor(s.id), "%.0f Hz  -  %.0f WPM", s.hz,
+                           s.wpm);
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(s.text.empty() ? "..." : s.text.c_str());
         ImGui::PopTextWrapPos();
+        ImGui::Spacing();
         ImGui::Separator();
       }
       ImGui::EndChild();
 
-      sectionLabel("Timeline (what was sent, in order)");
-      drawTimeline(150);
+      ImGui::SameLine();
+      ImGui::BeginChild("chatPane", ImVec2(0, bottomH), ImGuiChildFlags_Borders);
+      ImGui::TextColored(accent, "Chat log  -  what was sent, in order");
+      ImGui::Separator();
+      drawTimeline();
+      ImGui::EndChild();
+
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -1473,40 +1535,70 @@ void App::pullTimeline(morse_multi_detector_t *md) {
   }
 }
 
-// Chronological transcript across all stations: consecutive fragments from the
-// same station (without a long pause) are merged into one timestamped line, so
-// you can read who sent what, in order.
-void App::drawTimeline(float height) {
-  ImGui::BeginChild("timeline", ImVec2(-1, height), ImGuiChildFlags_Borders);
+// Chronological chat log: each station's transmission becomes one message
+// bubble (grouped, so a burst of characters is not split into many lines),
+// ordered by when it started. Reads like a conversation; the per-station panel
+// shows each frequency's full running transcript.
+void App::drawTimeline() {
   if (timeline_.empty()) {
-    ImGui::TextDisabled("Chronological transcript across all stations.");
-  } else {
-    size_t i = 0;
-    while (i < timeline_.size()) {
-      int id = timeline_[i].channel_id;
-      double hz = timeline_[i].tone_hz;
-      double t0 = timeline_[i].t_seconds;
-      double lastT = t0;
-      std::string line;
-      while (i < timeline_.size() && timeline_[i].channel_id == id &&
-             timeline_[i].t_seconds - lastT < 3.0) {
-        line += timeline_[i].text;
-        lastT = timeline_[i].t_seconds;
-        ++i;
+    ImGui::TextDisabled(
+        "As stations transmit, each message appears here in order.");
+    return;
+  }
+
+  struct Msg {
+    double t0, lastT, hz;
+    int id;
+    std::string text;
+  };
+  const double kGap = 2.0; // a pause longer than this starts a new message
+  std::vector<Msg> open, done;
+  for (const auto &e : timeline_) {
+    int oi = -1;
+    for (size_t k = 0; k < open.size(); ++k) {
+      if (open[k].id == e.channel_id) {
+        oi = (int)k;
+        break;
       }
-      int mm = (int)(t0 / 60.0);
-      int ss = (int)t0 % 60;
-      ImGui::TextColored(channelColor(id), "[%02d:%02d] %4.0f Hz", mm, ss, hz);
-      ImGui::SameLine();
-      ImGui::PushTextWrapPos(0.0f);
-      ImGui::TextUnformatted(line.c_str());
-      ImGui::PopTextWrapPos();
     }
-    if (capturing_) {
-      ImGui::SetScrollHereY(1.0f); // follow live
+    if (oi >= 0 && e.t_seconds - open[oi].lastT < kGap) {
+      open[oi].text += e.text;
+      open[oi].lastT = e.t_seconds;
+      open[oi].hz = e.tone_hz;
+    } else {
+      if (oi >= 0) {
+        done.push_back(open[oi]);
+        open.erase(open.begin() + oi);
+      }
+      Msg m;
+      m.t0 = e.t_seconds;
+      m.lastT = e.t_seconds;
+      m.hz = e.tone_hz;
+      m.id = e.channel_id;
+      m.text = e.text;
+      open.push_back(m);
     }
   }
-  ImGui::EndChild();
+  for (auto &m : open) {
+    done.push_back(m);
+  }
+  std::sort(done.begin(), done.end(),
+            [](const Msg &a, const Msg &b) { return a.t0 < b.t0; });
+
+  for (const auto &m : done) {
+    ImVec4 col = channelColor(m.id);
+    ImGui::TextColored(col, "%02d:%02d   %.0f Hz", (int)(m.t0 / 60.0),
+                       (int)m.t0 % 60, m.hz);
+    ImGui::Indent(14.0f);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(m.text.empty() ? "..." : m.text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Unindent(14.0f);
+    ImGui::Spacing();
+  }
+  if (capturing_) {
+    ImGui::SetScrollHereY(1.0f); // follow live
+  }
 }
 
 // Push one spectrogram line: FFT the window, fold it into kWfBins columns over
@@ -1608,47 +1700,102 @@ static ImU32 waterfallColor(float v) {
 }
 
 void App::drawWaterfall(float height) {
-  ImGui::BeginChild("waterfall", ImVec2(-1, height), ImGuiChildFlags_Borders);
-  ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImGui::BeginChild("waterfall", ImVec2(-1, height), ImGuiChildFlags_Borders,
+                    ImGuiWindowFlags_NoMove);
   ImVec2 avail = ImGui::GetContentRegionAvail();
+  ImVec2 origin = ImGui::GetCursorScreenPos(); // content top-left (incl. scroll)
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  // background
-  dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+
+  int rows = (int)wf_rows_.size();
+  const float rh = 3.0f; // pixels per time row; history scrolls vertically
+  float contentH = (float)rows * rh;
+  ImGui::Dummy(ImVec2(avail.x, contentH > avail.y ? contentH : avail.y));
+
+  // viewport background
+  float vpTop = origin.y + ImGui::GetScrollY();
+  dl->AddRectFilled(ImVec2(origin.x, vpTop),
+                    ImVec2(origin.x + avail.x, vpTop + avail.y),
                     IM_COL32(8, 8, 14, 255));
-  if (wf_rows_.empty()) {
-    ImGui::TextDisabled("Waterfall: frequency across, time scrolling down.");
+
+  if (rows == 0) {
+    dl->AddText(ImVec2(origin.x + 8, vpTop + 8), IM_COL32(150, 150, 170, 255),
+                "Waterfall: frequency across, newest at the bottom.");
     ImGui::EndChild();
     return;
   }
-  int rows = (int)wf_rows_.size();
-  float cw = avail.x / (float)kWfBins;
-  float rh = avail.y / (float)wf_max_rows_;
-  if (rh < 1.0f) {
-    rh = 1.0f;
+
+  // draw only the visible band of rows (oldest at top, newest at bottom)
+  float scrollY = ImGui::GetScrollY();
+  int first = (int)(scrollY / rh) - 1;
+  int last = (int)((scrollY + avail.y) / rh) + 1;
+  if (first < 0) {
+    first = 0;
   }
-  // newest row at the top; older rows scroll downward
-  for (int r = 0; r < rows; ++r) {
-    const std::array<float, kWfBins> &row = wf_rows_[rows - 1 - r];
+  if (last > rows) {
+    last = rows;
+  }
+  float cw = avail.x / (float)kWfBins;
+  for (int r = first; r < last; ++r) {
+    const std::array<float, kWfBins> &row = wf_rows_[r];
     float y = origin.y + (float)r * rh;
-    if (y > origin.y + avail.y) {
-      break;
-    }
     for (int c = 0; c < kWfBins; ++c) {
       float x = origin.x + (float)c * cw;
       dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw + 0.6f, y + rh + 0.6f),
                         waterfallColor(row[c]));
     }
   }
-  // frequency ticks along the top
+
+  // frequency scale pinned to the top of the viewport
   double f0 = tone_min_ > 0 ? tone_min_ : 100.0;
   double f1 = tone_max_ > f0 ? tone_max_ : 3000.0;
   for (int t = 0; t <= 4; ++t) {
     float fx = origin.x + avail.x * t / 4.0f;
     char lbl[16];
     std::snprintf(lbl, sizeof(lbl), "%.0f", f0 + (f1 - f0) * t / 4.0);
-    dl->AddLine(ImVec2(fx, origin.y), ImVec2(fx, origin.y + 5),
-                IM_COL32(180, 180, 200, 160));
-    dl->AddText(ImVec2(fx + 2, origin.y + 2), IM_COL32(200, 200, 220, 200), lbl);
+    dl->AddLine(ImVec2(fx, vpTop), ImVec2(fx, vpTop + 5),
+                IM_COL32(200, 200, 220, 160));
+    dl->AddText(ImVec2(fx + 2, vpTop + 1), IM_COL32(210, 210, 230, 220), lbl);
+  }
+
+  // follow newest while live, unless the user has scrolled up to review
+  float maxY = ImGui::GetScrollMaxY();
+  if (capturing_) {
+    if (wf_follow_) {
+      ImGui::SetScrollY(maxY);
+    }
+    // re-evaluate follow from the user's scroll position
+    wf_follow_ = ImGui::GetScrollY() >= maxY - rh * 2.0f;
   }
   ImGui::EndChild();
+}
+
+// (Re)configure the input band-pass to the current watched band, only when a
+// parameter actually changed. `streaming` keeps filter state across calls.
+void App::ensureFilter(unsigned int rate) {
+  bool changed = !filter_ready_ || filter_lo_seen_ != tone_min_ ||
+                 filter_hi_seen_ != tone_max_ ||
+                 filter_order_seen_ != filter_order_ ||
+                 cap_filter_.rate != rate;
+  if (changed) {
+    morse_filter_init(&cap_filter_, rate);
+    // a little margin so the passband edges don't clip wanted tones
+    double lo = tone_min_ > 60.0f ? tone_min_ - 20.0 : 0.0;
+    double hi = tone_max_ + 50.0;
+    morse_filter_bandpass(&cap_filter_, lo, hi, filter_order_);
+    filter_ready_ = true;
+    filter_lo_seen_ = tone_min_;
+    filter_hi_seen_ = tone_max_;
+    filter_order_seen_ = filter_order_;
+  }
+}
+
+void App::applyFilter(float *samples, size_t n, bool streaming) {
+  if (!filter_on_ || samples == nullptr || n == 0) {
+    return;
+  }
+  ensureFilter(static_cast<unsigned int>(rate_));
+  if (!streaming) {
+    morse_filter_reset(&cap_filter_);
+  }
+  morse_filter_process(&cap_filter_, samples, samples, n);
 }

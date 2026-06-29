@@ -34,6 +34,10 @@ typedef struct morse_detect_opts {
   double tone_min_hz;      /* low edge of the auto-detect band (0 => 100 Hz)  */
   double tone_max_hz;      /* high edge of the auto-detect band (0 => 3000 Hz)*/
   int track_tone;          /* live path: re-estimate pitch and follow drift   */
+  double squelch_snr;      /* live path: in-band SNR (linear) needed to accept */
+                           /* a mark, measured against the noise floor and the */
+                           /* off-tone bins. 0 => default (~4.5); <0 disables. */
+                           /* This is what rejects noise decoded as E/T soup.  */
 } morse_detect_opts_t;
 
 void morse_detect_opts_default(morse_detect_opts_t *opts);

@@ -109,7 +109,7 @@ if(MORSE_BUILD_TESTS)
   enable_testing()
   set(MORSE_TESTS
       test_timing test_table test_encode_decode test_synth_detect
-      test_roundtrip test_fft_tone test_cw test_multi)
+      test_roundtrip test_fft_tone test_cw test_multi test_filter test_squelch)
   foreach(t ${MORSE_TESTS})
     add_executable(${t} "tests/${t}.c")
     target_link_libraries(${t} PRIVATE morse)

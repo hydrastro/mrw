@@ -12,7 +12,7 @@
 
 #define MORSE_MULTI_MAX 32
 #define MORSE_MULTI_PENDING 32
-#define MORSE_MULTI_EVENTS 4096
+#define MORSE_MULTI_EVENTS 16384
 
 typedef struct {
   int used;
@@ -23,6 +23,13 @@ typedef struct {
   morse_detector_t *det;
   ds_str_t *text;
   struct morse_multi_detector *parent; /* for the per-channel sink trampoline */
+  /* keying-pattern analysis: distinguishes keyed CW from noise / sustained tones */
+  long long cur_on;  /* samples the tone has been continuously present */
+  long long cur_off; /* samples the tone has been continuously absent  */
+  int last_on;       /* tone present at the previous analysis */
+  int transitions;   /* off->on keying events seen so far */
+  int confirmed;     /* enough keying seen to believe this is real CW */
+  int sustained;     /* currently a held tone (carrier/hum/music), not CW */
 } multi_channel_t;
 
 /* A peak that has been seen but not yet promoted to a channel. */
@@ -51,7 +58,8 @@ struct morse_multi_detector {
   long long total;
   long long last_analysis;
   long long gate_samples; /* how long a channel stays "open" after a peak */
-  double *mag;            /* scratch, win/2 doubles */
+  double *mag; /* scratch, win/2 doubles */
+  double *nf;  /* scratch for the median noise floor, win/2 doubles */
   float *silence;         /* zero buffer, length hop, for gating closed channels */
 
   /* timeline */
@@ -59,6 +67,11 @@ struct morse_multi_detector {
   size_t event_head; /* next write index */
   size_t event_n;    /* number stored (<= MORSE_MULTI_EVENTS) */
 };
+
+static int cmp_double_asc(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return (x > y) - (x < y);
+}
 
 void morse_multi_opts_default(morse_multi_opts_t *o) {
   if (o == NULL) {
@@ -69,12 +82,15 @@ void morse_multi_opts_default(morse_multi_opts_t *o) {
   o->win = 0;
   o->hop = 0;
   o->max_channels = 12;
-  o->peak_ratio = 5.0;
+  o->peak_ratio = 6.5; /* peak must stand well above the median noise floor */
   o->merge_hz = 100.0;
   o->active_seconds = 1.5;
   o->gate_seconds = 0.0; /* auto */
   o->min_hits = 2;
   o->max_active = 1; /* single strongest tone by default */
+  o->min_keys = 4;
+  o->max_mark_seconds = 0.9;
+  o->squelch_snr = 4.5;
 }
 
 /* Per-channel decode sink: append to the channel transcript and forward to the
@@ -82,15 +98,18 @@ void morse_multi_opts_default(morse_multi_opts_t *o) {
 static void channel_sink(const char *utf8, void *user) {
   multi_channel_t *c = (multi_channel_t *)user;
   morse_multi_detector_t *d;
+  int shown;
   if (utf8 == NULL || c == NULL) {
     return;
   }
   d = c->parent;
   if (c->text != NULL) {
-    ds_str_append_cstr(c->text, utf8);
+    ds_str_append_cstr(c->text, utf8); /* full per-channel transcript */
   }
-  /* record a timeline event (ring buffer) */
-  if (d != NULL) {
+  /* Keep the shared timeline (and any user callback) free of noise: only emit
+   * for channels that have been confirmed as real keyed CW. */
+  shown = c->confirmed && !c->sustained;
+  if (d != NULL && shown) {
     morse_multi_event_t *e = &d->events[d->event_head];
     e->t_seconds = d->rate ? (double)d->total / (double)d->rate : 0.0;
     e->channel_id = c->id;
@@ -117,11 +136,25 @@ static int spawn_channel(morse_multi_detector_t *d, double freq, double snr) {
     }
   }
   if (slot < 0) {
-    /* Full: evict the longest-idle channel if it is past the active window. */
+    /* Full: prefer reclaiming an unconfirmed channel (likely noise) over a
+     * confirmed station. Among the preferred group, take the longest idle. */
     long long oldest = d->total + 1;
     int victim = -1;
+    int any_unconfirmed = 0;
     for (i = 0; i < MORSE_MULTI_MAX && i < d->opts.max_channels; ++i) {
-      if (d->ch[i].used && d->ch[i].last_active < oldest) {
+      if (d->ch[i].used && !d->ch[i].confirmed) {
+        any_unconfirmed = 1;
+        break;
+      }
+    }
+    for (i = 0; i < MORSE_MULTI_MAX && i < d->opts.max_channels; ++i) {
+      if (!d->ch[i].used) {
+        continue;
+      }
+      if (any_unconfirmed && d->ch[i].confirmed) {
+        continue; /* spare confirmed stations while noise channels remain */
+      }
+      if (d->ch[i].last_active < oldest) {
         oldest = d->ch[i].last_active;
         victim = i;
       }
@@ -129,8 +162,11 @@ static int spawn_channel(morse_multi_detector_t *d, double freq, double snr) {
     if (victim < 0) {
       return -1;
     }
-    if ((double)(d->total - oldest) <= d->opts.active_seconds * d->rate) {
-      return -1; /* everyone is still active; do not clobber a live station */
+    /* Confirmed stations are only displaced once they have gone idle; an
+     * unconfirmed channel may be reclaimed immediately. */
+    if (d->ch[victim].confirmed &&
+        (double)(d->total - oldest) <= d->opts.active_seconds * d->rate) {
+      return -1;
     }
     if (d->ch[victim].det != NULL) {
       morse_detector_destroy(d->ch[victim].det);
@@ -149,6 +185,7 @@ static int spawn_channel(morse_multi_detector_t *d, double freq, double snr) {
     o.tone_hz = freq;   /* lock this channel to the detected pitch */
     o.track_tone = 0;   /* keep stations from drifting into each other */
     o.block_size = 512; /* narrower Goertzel => less cross-frequency leakage */
+    o.squelch_snr = d->opts.squelch_snr;
     c->parent = d;
     c->det = morse_detector_create(d->table, d->rate, &o, channel_sink, c);
     if (c->det == NULL) {
@@ -171,7 +208,7 @@ static int spawn_channel(morse_multi_detector_t *d, double freq, double snr) {
 }
 
 static void analyze(morse_multi_detector_t *d) {
-  double binHz, mean;
+  double binHz, floor_mag = 0.0;
   size_t kmin, kmax, k, half;
   int matched;
   if (d->abuf_len < d->win) {
@@ -194,13 +231,22 @@ static void analyze(morse_multi_detector_t *d) {
     return;
   }
 
-  mean = 0.0;
-  for (k = kmin; k <= kmax; ++k) {
-    mean += d->mag[k];
+  /* A median is a far more robust noise-floor estimate than a mean: a handful
+   * of real signal peaks barely move it, but it tracks the broadband noise.
+   * Requiring peaks to stand well above the median (not the mean) keeps random
+   * noise spikes from being mistaken for stations. */
+  {
+    size_t band = kmax - kmin + 1;
+    for (k = kmin; k <= kmax; ++k) {
+      d->nf[k - kmin] = d->mag[k];
+    }
+    qsort(d->nf, band, sizeof(double), cmp_double_asc);
+    floor_mag = d->nf[band / 2];
   }
-  mean /= (double)(kmax - kmin + 1);
-  if (mean <= 0.0) {
-    return;
+  if (floor_mag <= 0.0) {
+    /* Degenerate (true digital silence): fall back to a tiny epsilon so the
+     * ratio test below simply finds nothing. */
+    floor_mag = 1e-12;
   }
 
   /* Collect local-maximum candidates above the ratio gate. */
@@ -214,7 +260,7 @@ static void analyze(morse_multi_detector_t *d) {
     for (k = kmin + 1; k < kmax && ncand < 64; ++k) {
       double a, b, g, denom, p, freq, strength;
       b = d->mag[k];
-      if (b < d->opts.peak_ratio * mean) {
+      if (b < d->opts.peak_ratio * floor_mag) {
         continue;
       }
       a = d->mag[k - 1];
@@ -230,7 +276,7 @@ static void analyze(morse_multi_detector_t *d) {
         p = -0.5;
       }
       freq = ((double)k + p) * binHz;
-      strength = b / mean;
+      strength = b / floor_mag;
       cand_f[ncand] = freq;
       cand_s[ncand] = strength;
       ncand++;
@@ -337,6 +383,46 @@ static void analyze(morse_multi_detector_t *d) {
         }
       }
     }
+
+    /* Update each channel's keying pattern. A channel is believed to be real
+     * CW only once it has been keyed on and off enough times (rejecting the
+     * stray dit/dah a noise spike makes); a tone held continuously for too long
+     * is a carrier / hum / music note, not a keyed mark, and is suppressed.
+     * This is what stops idle frequencies from filling with Es and Ts. */
+    {
+      long long hop = (long long)d->hop;
+      long long max_mark = (long long)(d->opts.max_mark_seconds * d->rate);
+      long long off_reset = (long long)(0.30 * d->rate);
+      int c;
+      for (c = 0; c < MORSE_MULTI_MAX && c < d->opts.max_channels; ++c) {
+        multi_channel_t *ch = &d->ch[c];
+        int on;
+        if (!ch->used) {
+          continue;
+        }
+        on = (ch->last_active == d->total);
+        if (on) {
+          if (!ch->last_on) {
+            ch->transitions++;
+          }
+          ch->cur_on += hop;
+          ch->cur_off = 0;
+          if (ch->cur_on > max_mark) {
+            ch->sustained = 1;
+          }
+        } else {
+          ch->cur_off += hop;
+          ch->cur_on = 0;
+          if (ch->cur_off > off_reset) {
+            ch->sustained = 0;
+          }
+        }
+        ch->last_on = on;
+        if (ch->transitions >= d->opts.min_keys) {
+          ch->confirmed = 1;
+        }
+      }
+    }
   }
 }
 
@@ -375,6 +461,15 @@ morse_multi_detector_t *morse_multi_create(const morse_table_t *table,
     }
     if (d->opts.active_seconds <= 0.0) {
       d->opts.active_seconds = 1.5;
+    }
+    if (d->opts.min_keys <= 0) {
+      d->opts.min_keys = 4;
+    }
+    if (d->opts.max_mark_seconds <= 0.0) {
+      d->opts.max_mark_seconds = 0.9;
+    }
+    if (d->opts.squelch_snr <= 0.0) {
+      d->opts.squelch_snr = 4.5;
     }
   }
   d->sink = sink;
@@ -416,10 +511,13 @@ morse_multi_detector_t *morse_multi_create(const morse_table_t *table,
 
   d->abuf = (float *)morse_xmalloc(sizeof(float) * d->win);
   d->mag = (double *)morse_xmalloc(sizeof(double) * (d->win / 2));
+  d->nf = (double *)morse_xmalloc(sizeof(double) * (d->win / 2));
   d->silence = (float *)morse_xcalloc(d->hop, sizeof(float));
-  if (d->abuf == NULL || d->mag == NULL || d->silence == NULL) {
+  if (d->abuf == NULL || d->mag == NULL || d->nf == NULL ||
+      d->silence == NULL) {
     morse_xfree(d->abuf);
     morse_xfree(d->mag);
+    morse_xfree(d->nf);
     morse_xfree(d->silence);
     morse_xfree(d);
     return NULL;
@@ -447,6 +545,7 @@ void morse_multi_destroy(morse_multi_detector_t *d) {
   }
   morse_xfree(d->abuf);
   morse_xfree(d->mag);
+  morse_xfree(d->nf);
   morse_xfree(d->silence);
   morse_xfree(d);
 }
@@ -526,11 +625,16 @@ void morse_multi_finish(morse_multi_detector_t *d) {
   }
 }
 
-/* Build an array of in-use channel indices ordered by most-recent activity. */
+/* A channel is shown to the caller only once it looks like real keyed CW. */
+static int channel_is_shown(const multi_channel_t *c) {
+  return c->used && c->confirmed && !c->sustained;
+}
+
+/* Build an array of shown channel indices ordered by most-recent activity. */
 static int order_channels(const morse_multi_detector_t *d, int *order) {
   int n = 0, i, j;
   for (i = 0; i < MORSE_MULTI_MAX && i < d->opts.max_channels; ++i) {
-    if (d->ch[i].used) {
+    if (channel_is_shown(&d->ch[i])) {
       order[n++] = i;
     }
   }

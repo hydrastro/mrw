@@ -40,6 +40,7 @@ void morse_detect_opts_default(morse_detect_opts_t *opts) {
   opts->tone_min_hz = 100.0;    /* CW tones are commonly 300-1000, but allow */
   opts->tone_max_hz = 4000.0;  /* wide: any common CW pitch (and then some) */
   opts->track_tone = 1;         /* follow pitch changes on the live path     */
+  opts->squelch_snr = 4.5;      /* reject marks weaker than ~6.5 dB over noise */
 }
 
 /* ---- envelope --------------------------------------------------------- */
@@ -289,6 +290,14 @@ struct morse_detector {
   double peak;
   double last_norm; /* most recent normalized block power, for the meter */
 
+  /* SNR squelch: a mark is accepted only when the tone bin stands well above
+   * both its tracked noise floor and the neighbouring off-tone bins. This is
+   * what stops noise and broadband audio from decoding into stray dits/dahs. */
+  double coeff_lo, coeff_hi; /* Goertzel coeffs for the off-tone reference bins */
+  double nfloor;             /* tracked in-bin noise-floor power */
+  double snr_on, snr_off;    /* squelch open / close thresholds (linear power) */
+  int on_pending;            /* consecutive above-threshold blocks (debounce) */
+
   /* wideband pitch tracking */
   int track;
   int locked;       /* have we adopted a confident tone estimate yet */
@@ -341,6 +350,26 @@ morse_detector_t *morse_detector_create(const morse_table_t *table,
   det->thr_lo = det->thr_hi * (opts->hysteresis > 0.0 ? opts->hysteresis : 0.6);
   det->decay = opts->noise_floor_decay > 0.0 ? opts->noise_floor_decay : 0.999;
   det->peak = 1e-9;
+
+  /* SNR squelch setup: reference bins sit ~200 Hz either side of the tone,
+   * just outside the Goertzel main lobe, to gauge the local broadband level. */
+  {
+    double nyq = (double)sample_rate * 0.5;
+    double flo = tone - 200.0, fhi = tone + 200.0;
+    if (flo < 50.0) {
+      flo = 50.0;
+    }
+    if (fhi > nyq * 0.9) {
+      fhi = nyq * 0.9;
+    }
+    det->coeff_lo = coeff_for(flo, sample_rate);
+    det->coeff_hi = coeff_for(fhi, sample_rate);
+  }
+  det->nfloor = 1e-9;
+  det->snr_on = opts->squelch_snr > 0.0 ? opts->squelch_snr
+                : (opts->squelch_snr < 0.0 ? 0.0 : 4.5);
+  det->snr_off = det->snr_on * 0.5;
+  det->on_pending = 0;
 
   /* If no fixed tone was given, enable wideband tracking by default. */
   det->track = opts->tone_hz > 0.0 ? 0 : (opts->track_tone ? 1 : 0);
@@ -469,6 +498,18 @@ static void detector_retrack(morse_detector_t *det) {
       det->tone_hz = det->tone_hz + 0.5 * (f - det->tone_hz);
     }
     det->coeff = coeff_for(det->tone_hz, det->sample_rate);
+    {
+      double nyq = (double)det->sample_rate * 0.5;
+      double flo = det->tone_hz - 200.0, fhi = det->tone_hz + 200.0;
+      if (flo < 50.0) {
+        flo = 50.0;
+      }
+      if (fhi > nyq * 0.9) {
+        fhi = nyq * 0.9;
+      }
+      det->coeff_lo = coeff_for(flo, det->sample_rate);
+      det->coeff_hi = coeff_for(fhi, det->sample_rate);
+    }
   }
 }
 
@@ -483,7 +524,7 @@ static void detector_consume_block(morse_detector_t *det, const float *blk) {
 
   p = goertzel_block(blk, det->block, det->coeff);
 
-  /* decaying peak tracker */
+  /* decaying peak tracker (kept for the live level meter) */
   det->peak = p > det->peak ? p : det->peak * det->decay;
   if (det->peak < 1e-12) {
     det->peak = 1e-12;
@@ -499,11 +540,54 @@ static void detector_consume_block(morse_detector_t *det, const float *blk) {
     return;
   }
 
-  next = det->state;
-  if (det->state == 0 && norm > det->thr_hi) {
-    next = 1;
-  } else if (det->state == 1 && norm < det->thr_lo) {
-    next = 0;
+  /* ---- SNR squelch ---------------------------------------------------- *
+   * Decide mark vs space from how far the tone bin rises above the local
+   * noise, estimated two ways: a slowly-tracked in-bin noise floor (steady
+   * hiss) and the louder of the two off-tone reference bins (broadband bursts,
+   * static, speech and music all raise the neighbours too). A real CW tone
+   * towers over both; noise does not. This replaces normalising by a decaying
+   * peak, which would eventually read plain noise as a string of dits.        */
+  if (det->snr_on > 0.0) {
+    double rlo = goertzel_block(blk, det->block, det->coeff_lo);
+    double rhi = goertzel_block(blk, det->block, det->coeff_hi);
+    double off = rlo > rhi ? rlo : rhi; /* the louder neighbour */
+    double ref, snr;
+
+    /* track the in-bin noise floor: fall fast toward quiet, rise slowly */
+    if (p < det->nfloor) {
+      det->nfloor = 0.7 * det->nfloor + 0.3 * p;
+    } else {
+      det->nfloor = 0.9995 * det->nfloor + 0.0005 * p;
+    }
+    if (det->nfloor < 1e-12) {
+      det->nfloor = 1e-12;
+    }
+    ref = off > det->nfloor ? off : det->nfloor; /* most conservative floor */
+    snr = p / (ref + 1e-12);
+
+    next = det->state;
+    if (det->state == 0) {
+      if (snr > det->snr_on) {
+        if (++det->on_pending >= 2) { /* debounce single-block spikes */
+          next = 1;
+        }
+      } else {
+        det->on_pending = 0;
+      }
+    } else { /* state == 1 (mark) */
+      det->on_pending = 0;
+      if (snr < det->snr_off) {
+        next = 0;
+      }
+    }
+  } else {
+    /* squelch disabled: fall back to the peak-relative threshold */
+    next = det->state;
+    if (det->state == 0 && norm > det->thr_hi) {
+      next = 1;
+    } else if (det->state == 1 && norm < det->thr_lo) {
+      next = 0;
+    }
   }
 
   if (next != det->state) {

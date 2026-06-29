@@ -59,9 +59,11 @@ private:
   void decodeFileMulti(const std::string &path);
   void refreshStations();
   void pullTimeline(morse_multi_detector_t *md);
-  void drawTimeline(float height);
+  void drawTimeline();
   void pushWaterfallRow(const float *samples, size_t n);
   void drawWaterfall(float height);
+  void ensureFilter(unsigned int rate);
+  void applyFilter(float *samples, size_t n, bool streaming);
   void drawTree();
   void startKeyer();
   void stopKeyer();
@@ -107,6 +109,15 @@ private:
   float manual_tone_ = 0.0f; // 0 => auto-detect
   float tone_min_ = 100.0f;
   float tone_max_ = 3000.0f;
+
+  // input band-pass filter (cleans rumble / hiss / out-of-band before decode)
+  bool filter_on_ = true;
+  int filter_order_ = 4;
+  float squelch_snr_ = 4.5f;
+  morse_filter_t cap_filter_;
+  bool filter_ready_ = false;
+  float filter_lo_seen_ = -1.0f, filter_hi_seen_ = -1.0f;
+  int filter_order_seen_ = -1;
   bool track_tone_ = true;
 
   // offline listen / live capture
@@ -161,8 +172,9 @@ private:
   // waterfall / spectrogram history (ring of normalized magnitude rows)
   static const int kWfBins = 160;
   std::vector<std::array<float, 160>> wf_rows_;
-  size_t wf_max_rows_ = 160;
-  float wf_peak_ = 1e-6f; // decaying global peak for normalization
+  size_t wf_max_rows_ = 1200; // scrollable history depth
+  float wf_peak_ = 1e-6f;     // decaying global peak for normalization
+  bool wf_follow_ = true;     // waterfall auto-scrolls to newest while live
 
   bool tree_view_ = true; // Reference tab: tree vs table
 

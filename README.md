@@ -37,17 +37,29 @@ every byte it allocates.
   the signal itself (Welch-averaged FFT spectrum with parabolic interpolation),
   so it locks onto whatever pitch is present and can follow drift. Works across
   a wide configurable band and on noisy signals.
+- **Noise rejection** — idle and noisy channels no longer decode into streams
+  of stray dits and dashes. Each station's tone must rise above the noise floor
+  *and* its neighbouring frequencies (an SNR squelch) before a mark is accepted,
+  and a channel is only reported once it shows real on/off keying, so static,
+  hiss, hum, carriers and broadband audio are turned away while genuine CW gets
+  through. A **Squelch** control trades noise rejection against weak-signal copy.
+- **Audio band-pass** — a cascaded biquad (Butterworth) filter cleans the input
+  before decoding, removing sub-audible rumble, mains hum, hiss and out-of-band
+  interference; narrow it onto a station to lift a weak signal out of the noise.
 - **One tone, or many** — by default the decoder follows only the single
   strongest, confident tone at any instant, which is exactly right when stations
-  take turns (weak side peaks, mostly leakage, are ignored). Flip one switch and
-  a rolling FFT tracks every active peak and decodes several genuinely
-  simultaneous stations in parallel, with non-maximum suppression and
-  per-channel gating to reject ghosts and bleed-through. Either way each station
-  gets its own frequency lock, threshold, and speed, and every fragment is
-  timestamped onto a shared timeline.
-- **Waterfall display** — a classic SDR-style spectrogram (frequency across,
-  time scrolling down, colour = intensity) for live audio or a whole file, so
-  you can *see* the stations come and go.
+  take turns. Detection uses a robust **median noise floor**, so broadband hiss
+  and random spikes are not mistaken for stations — idle frequencies stay quiet
+  instead of filling with junk. Flip one switch and a rolling FFT tracks every
+  active peak and decodes several genuinely simultaneous stations in parallel.
+  Each station gets its own frequency lock, threshold, and speed.
+- **Chat-log timeline** — every transmission becomes one timestamped message,
+  grouped per station and ordered in time, so the decode reads like a
+  conversation; a side panel keeps each frequency's full running transcript.
+- **Scrollable SDR waterfall** — a classic spectrogram (frequency across, newest
+  at the bottom, colour = intensity) that follows live and scrolls back through
+  history, for live audio or a whole file, so you can *see* the stations come
+  and go.
 - **Decode live audio** — from a chosen **input device**, or from **system
   output** (the default: WASAPI loopback on Windows; an auto-selected monitor /
   "Stereo Mix" input elsewhere).
@@ -76,6 +88,7 @@ morse-deluxe/
 ├── src/                Core library implementation (pure C11)
 │   ├── morse_alloc.{c,h}   counting allocator (private)
 │   ├── fft.c               radix-2 FFT + dominant-tone estimator
+│   ├── filter.c            biquad band-pass (Butterworth) audio filter
 │   ├── multi.c             multi-station decoder (one detector per peak)
 │   ├── cw.c                iambic keyer, serial keyer, cwdaemon, WinKeyer
 │   └── table.c encode.c decode.c synth.c detect.c wav.c timing.c types.c morse.c
@@ -239,13 +252,14 @@ A single tabbed workspace (no scattered windows) with a persistent status bar:
 
 - **Encode** — variant, timing/tone controls, text → Morse, render / play /
   export, and a live waveform.
-- **Decode** — *From text* (paste dots and dashes) and *From audio*: decode a
-  file (`.wav`, or any format via ffmpeg), or listen live. Input defaults to the
-  **system's audio output**, with device selection, a real-time FFT spectrum and
-  an SDR-style **waterfall**. A **Simultaneous stations** switch chooses between
-  following the single strongest tone (for stations that take turns) and decoding
-  several overlapping stations at once; each detected station is listed with its
-  pitch, speed, and transcript, above a colour-coded chronological **timeline**.
+- **Decode** — *From text* (paste dots and dashes) and *From audio*, laid out
+  like an SDR receiver: a live spectrum and a **scrollable waterfall** across the
+  top, and below them the detected **stations** (each with its pitch, speed and
+  full running transcript) beside a colour-coded **chat log** of what was sent in
+  order. Input defaults to the **system's audio output**, with device selection,
+  an **audio band-pass**, and a **Simultaneous stations** switch (single
+  strongest tone vs several at once). Decode a file (`.wav`, or any format via
+  ffmpeg) or listen live.
 - **Keyer** — straight key or **iambic paddle** (Curtis A/B); hold `SPACE`
   (straight) or `Z`/`X` (paddles), hear click-free sidetone, and watch the
   streaming decode with a live WPM estimate.
@@ -280,19 +294,17 @@ peaks (which are mostly spectral leakage) are never decoded into garbage. A
 single switch (`--multi` on the CLI, the *Simultaneous stations* checkbox in the
 GUI) turns on full parallel decoding for genuinely overlapping signals.
 
-In either mode morsw watches the whole band with a rolling FFT, finds the active
-tone peaks each hop, applies non-maximum suppression so the spectral skirts of a
-strong carrier do not spawn phantom stations, and dedicates an independent
-narrow-band decoder to each tracked peak. A newly found station must persist
-across a couple of analyses before it is created (rejecting glitches), and is
-seeded with the buffered analysis window so its opening characters are not lost
-to detection latency. Each channel only decodes while its own tone is actually
-present, so a strong station on one frequency cannot bleed into an idle
-neighbour. Every decoded fragment is stamped with the time it was sent and
-recorded on a shared **timeline**. Use it from the CLI with `morsec stations
-FILE.wav` (which prints the per-station transcripts and the merged timeline), or
-in the GUI's Decode → From audio tab — live or from a file — which adds an
-SDR-style **waterfall** and a colour-coded timeline.
+In either mode morsw watches the whole band with a rolling FFT and compares each
+candidate peak against a **median noise floor** (far more robust than a mean:
+real signals barely move it, so a peak must stand well clear of the surrounding
+noise to count). It applies non-maximum suppression so the spectral skirts of a
+strong carrier do not spawn phantom stations, requires a new peak to persist
+across a couple of analyses before creating a station, and gates each channel so
+it only decodes while its own tone is present. The upshot is that idle
+frequencies stay silent instead of filling with noise. Every decoded fragment is
+stamped with the time it was sent; the GUI groups them into a per-station
+**chat log** and an SDR-style scrollable **waterfall**, while the CLI's `morsec
+stations FILE.wav` prints the per-station transcripts and a merged timeline.
 
 ## Interfacing with CW gear
 
@@ -354,11 +366,13 @@ The tests assert the counters return to zero after every round-trip.
 
 ## Tests
 
-Eight suites (`make check`, or `ctest`): timing math, codebook + variant gating,
+Ten suites (`make check`, or `ctest`): timing math, codebook + variant gating,
 encode/decode (prosigns, accents, policies, custom glyphs), per-sample
 synthesis/detection bounds with clean and noisy signals, full
 `text → WAV-on-disk → text` round-trips, the FFT and dominant-tone estimator,
-multi-station separation (two overlapping stations decoded in parallel), and the
+multi-station separation (overlapping stations decoded in parallel, sequential
+stations kept clean, broadband noise rejected, timeline ordering), the biquad
+band-pass (in-band tones pass, out-of-band rejected), the SNR squelch (pure noise stays silent while clean signals decode), and the
 CW keyer/protocol layer — together exercising tens of thousands of
 assertions and checking the allocator balances to zero.
 

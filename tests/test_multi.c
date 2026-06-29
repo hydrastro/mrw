@@ -222,4 +222,116 @@ TEST_BEGIN("multi-station");
   free(a);
   free(seq);
 }
+
+/* Scenario 3: pure broadband noise must not be decoded as a station. A short
+ * real signal buried in the same noise still must be found. */
+{
+  const unsigned int rate = 44100;
+  size_t n = rate * 4, i;
+  float *buf;
+  morse_table_t *table;
+  morse_multi_detector_t *md;
+  morse_multi_opts_t opts;
+  unsigned int seed = 12345u;
+  size_t sigN = 0;
+  float *sig;
+  int noise_only_channels, with_signal_found = 0;
+
+  /* deterministic pseudo-noise */
+  buf = (float *)malloc(sizeof(float) * n);
+  for (i = 0; i < n; ++i) {
+    seed = seed * 1103515245u + 12345u;
+    buf[i] = ((float)((seed >> 9) & 0xFFFF) / 32768.0f - 1.0f) * 0.25f;
+  }
+
+  table = morse_table_create(MORSE_VARIANT_INTERNATIONAL);
+  morse_multi_opts_default(&opts);
+
+  /* (a) noise alone -> expect no stations */
+  md = morse_multi_create(table, rate, &opts, NULL, NULL);
+  for (i = 0; i < n; i += 2048) {
+    size_t step = n - i < 2048 ? n - i : 2048;
+    morse_multi_process(md, buf + i, step);
+  }
+  morse_multi_finish(md);
+  noise_only_channels = (int)morse_multi_channel_count(md);
+  morse_multi_destroy(md);
+  CHECK(noise_only_channels == 0);
+
+  /* (b) the same noise plus a clear tone -> the tone is found */
+  sig = render("PARIS", 20.0, 700.0, rate, &sigN);
+  for (i = 0; i < sigN && i < n; ++i) {
+    buf[i] += 0.9f * sig[i];
+  }
+  md = morse_multi_create(table, rate, &opts, NULL, NULL);
+  for (i = 0; i < n; i += 2048) {
+    size_t step = n - i < 2048 ? n - i : 2048;
+    morse_multi_process(md, buf + i, step);
+  }
+  morse_multi_finish(md);
+  {
+    size_t nch = morse_multi_channel_count(md), c;
+    for (c = 0; c < nch; ++c) {
+      morse_multi_channel_info_t info;
+      const char *txt = morse_multi_channel_text(md, c);
+      if (morse_multi_get_channel(md, c, &info) && txt != NULL &&
+          fabs(info.tone_hz - 700.0) < 50.0 && contains_squashed(txt, "PARIS")) {
+        with_signal_found = 1;
+      }
+    }
+  }
+  CHECK(with_signal_found);
+
+  morse_multi_destroy(md);
+  morse_table_destroy(table);
+  free(buf);
+  free(sig);
+}
+
+/* Scenario 4: a continuously held tone (a carrier, hum, or music note) is not
+ * keyed CW and must not be reported as a station, even though it is a strong,
+ * clean spectral peak. A keyed signal at the same pitch still is. */
+{
+  const unsigned int rate = 44100;
+  size_t n = rate * 4, i;
+  float *carrier;
+  morse_table_t *table;
+  morse_multi_detector_t *md;
+  morse_multi_opts_t opts;
+  int carrier_channels;
+  size_t kn = 0;
+  float *keyed;
+
+  carrier = (float *)malloc(sizeof(float) * n);
+  for (i = 0; i < n; ++i) {
+    carrier[i] = 0.6f * sinf(2.0f * 3.14159265f * 700.0f * (float)i / rate);
+  }
+  table = morse_table_create(MORSE_VARIANT_INTERNATIONAL);
+  morse_multi_opts_default(&opts);
+
+  md = morse_multi_create(table, rate, &opts, NULL, NULL);
+  for (i = 0; i < n; i += 2048) {
+    size_t step = n - i < 2048 ? n - i : 2048;
+    morse_multi_process(md, carrier + i, step);
+  }
+  morse_multi_finish(md);
+  carrier_channels = (int)morse_multi_channel_count(md);
+  morse_multi_destroy(md);
+  CHECK(carrier_channels == 0); /* a steady carrier is not a CW station */
+
+  /* a properly keyed signal at the same frequency is still detected */
+  keyed = render("CQ", 20.0, 700.0, rate, &kn);
+  md = morse_multi_create(table, rate, &opts, NULL, NULL);
+  for (i = 0; i < kn; i += 2048) {
+    size_t step = kn - i < 2048 ? kn - i : 2048;
+    morse_multi_process(md, keyed + i, step);
+  }
+  morse_multi_finish(md);
+  CHECK(morse_multi_channel_count(md) >= 1);
+  morse_multi_destroy(md);
+
+  morse_table_destroy(table);
+  free(carrier);
+  free(keyed);
+}
 TEST_END()

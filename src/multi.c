@@ -74,6 +74,7 @@ void morse_multi_opts_default(morse_multi_opts_t *o) {
   o->active_seconds = 1.5;
   o->gate_seconds = 0.0; /* auto */
   o->min_hits = 2;
+  o->max_active = 1; /* single strongest tone by default */
 }
 
 /* Per-channel decode sink: append to the channel transcript and forward to the
@@ -252,6 +253,8 @@ static void analyze(morse_multi_detector_t *d) {
      * guard band of an already-accepted (stronger) peak. This removes the
      * spectral-leakage skirts that surround a strong carrier and would
      * otherwise spawn phantom stations. */
+    {
+    int active_used = 0;
     for (i = 0; i < ncand; ++i) {
       int suppressed = 0;
       for (j = 0; j < i; ++j) {
@@ -264,6 +267,13 @@ static void analyze(morse_multi_detector_t *d) {
       if (suppressed) {
         continue;
       }
+      /* Only follow the strongest few tones. With max_active == 1 this tracks a
+       * single dominant station at a time - ideal when operators take turns,
+       * since weak side peaks (mostly leakage) are never decoded. */
+      if (d->opts.max_active > 0 && active_used >= d->opts.max_active) {
+        break;
+      }
+      active_used++;
       /* match to an existing channel, else require persistence before spawning */
       matched = 0;
       {
@@ -314,6 +324,7 @@ static void analyze(morse_multi_detector_t *d) {
         }
       }
     }
+    } /* end active_used scope */
 
     /* Age out pending candidates that stopped appearing. */
     {

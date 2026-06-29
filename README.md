@@ -37,12 +37,17 @@ every byte it allocates.
   the signal itself (Welch-averaged FFT spectrum with parabolic interpolation),
   so it locks onto whatever pitch is present and can follow drift. Works across
   a wide configurable band and on noisy signals.
-- **Decode many stations at once** — a rolling FFT finds every active tone peak
-  and dedicates an independent narrow-band decoder to each, with non-maximum
-  suppression and per-channel gating so spectral-leakage ghosts and bleed-through
-  are rejected. Each station gets its own frequency lock, threshold, and speed
-  estimate, is transcribed in parallel, and every fragment is timestamped onto a
-  shared timeline so you can see what was sent before what.
+- **One tone, or many** — by default the decoder follows only the single
+  strongest, confident tone at any instant, which is exactly right when stations
+  take turns (weak side peaks, mostly leakage, are ignored). Flip one switch and
+  a rolling FFT tracks every active peak and decodes several genuinely
+  simultaneous stations in parallel, with non-maximum suppression and
+  per-channel gating to reject ghosts and bleed-through. Either way each station
+  gets its own frequency lock, threshold, and speed, and every fragment is
+  timestamped onto a shared timeline.
+- **Waterfall display** — a classic SDR-style spectrogram (frequency across,
+  time scrolling down, colour = intensity) for live audio or a whole file, so
+  you can *see* the stations come and go.
 - **Decode live audio** — from a chosen **input device**, or from **system
   output** (the default: WASAPI loopback on Windows; an auto-selected monitor /
   "Stereo Mix" input elsewhere).
@@ -212,7 +217,8 @@ morsec encode "<AR> 73"                    # .-.-. / --... ...--
 echo ".... ." | morsec decode              # HI
 morsec wav -w 25 -t 700 -o cq.wav "CQ DE K1ABC"
 morsec listen cq.wav                       # decode it back (auto-detects 700 Hz)
-morsec stations titanic.wav                # decode every station, by pitch
+morsec stations titanic.wav                # decode the strongest tone over time
+morsec stations --multi titanic.wav        # decode simultaneous stations
 morsec tree 4                              # print the dot/dash code tree
 
 # Drive real gear
@@ -235,10 +241,11 @@ A single tabbed workspace (no scattered windows) with a persistent status bar:
   export, and a live waveform.
 - **Decode** — *From text* (paste dots and dashes) and *From audio*: decode a
   file (`.wav`, or any format via ffmpeg), or listen live. Input defaults to the
-  **system's audio output**, with device selection and a real-time FFT spectrum.
-  Every detected station is listed separately with its pitch, speed, and
-  transcript, and a colour-coded **timeline** shows what each station sent in
-  chronological order — so overlapping signals are pulled apart automatically.
+  **system's audio output**, with device selection, a real-time FFT spectrum and
+  an SDR-style **waterfall**. A **Simultaneous stations** switch chooses between
+  following the single strongest tone (for stations that take turns) and decoding
+  several overlapping stations at once; each detected station is listed with its
+  pitch, speed, and transcript, above a colour-coded chronological **timeline**.
 - **Keyer** — straight key or **iambic paddle** (Curtis A/B); hold `SPACE`
   (straight) or `Z`/`X` (paddles), hear click-free sidetone, and watch the
   streaming decode with a live WPM estimate.
@@ -266,23 +273,26 @@ without being told the tone in advance.
 
 ## Decoding many stations at once
 
-A single Goertzel detector can only track one pitch. Real recordings — a busy
-band, the Titanic distress traffic — have several operators keying at once on
-different frequencies. morsw watches the whole band with a rolling FFT, finds
-the active tone peaks each hop, applies non-maximum suppression so the spectral
-skirts of a strong carrier do not spawn phantom stations, and dedicates an
-independent narrow-band decoder to each real peak. A newly found station must
-persist across a couple of analyses before it is created (rejecting glitches),
-and is seeded with the buffered analysis window so its opening characters are
-not lost to detection latency. Each channel only decodes while its own tone is
-actually present, so a strong station on one frequency cannot bleed into an idle
-neighbour and fill it with garbage. Every decoded fragment is also stamped with
-the time it was sent and recorded on a shared **timeline**, so you can read what
-each station sent, in order. Use it from the CLI with `morsec stations
-FILE.wav` (which prints both the per-station transcripts and the merged
-timeline), or in the GUI's Decode → From audio tab (live or from a file), where
-each station shows up as its own pitch / speed / transcript row above a
-chronological, colour-coded timeline.
+By default the decoder follows only the **single strongest, confident tone** at
+any moment. That is the right behaviour when operators take turns — each
+transmission, on whatever pitch, is tracked as it becomes dominant, and weak side
+peaks (which are mostly spectral leakage) are never decoded into garbage. A
+single switch (`--multi` on the CLI, the *Simultaneous stations* checkbox in the
+GUI) turns on full parallel decoding for genuinely overlapping signals.
+
+In either mode morsw watches the whole band with a rolling FFT, finds the active
+tone peaks each hop, applies non-maximum suppression so the spectral skirts of a
+strong carrier do not spawn phantom stations, and dedicates an independent
+narrow-band decoder to each tracked peak. A newly found station must persist
+across a couple of analyses before it is created (rejecting glitches), and is
+seeded with the buffered analysis window so its opening characters are not lost
+to detection latency. Each channel only decodes while its own tone is actually
+present, so a strong station on one frequency cannot bleed into an idle
+neighbour. Every decoded fragment is stamped with the time it was sent and
+recorded on a shared **timeline**. Use it from the CLI with `morsec stations
+FILE.wav` (which prints the per-station transcripts and the merged timeline), or
+in the GUI's Decode → From audio tab — live or from a file — which adds an
+SDR-style **waterfall** and a colour-coded timeline.
 
 ## Interfacing with CW gear
 

@@ -40,6 +40,11 @@ typedef struct morse_multi_opts {
                           /* (0 => a small default ~0.12s)                     */
   int min_hits;           /* analyses a new peak must persist before a channel  */
                           /* is created, rejecting transient ghosts (0 => 2)   */
+  int max_active;         /* how many tones may decode at once. 1 (the default) */
+                          /* follows only the single strongest confident tone, */
+                          /* which is what you want when stations take turns;   */
+                          /* set higher (or <=0 for no limit) to decode several */
+                          /* genuinely simultaneous stations in parallel.       */
 } morse_multi_opts_t;
 
 void morse_multi_opts_default(morse_multi_opts_t *opts);

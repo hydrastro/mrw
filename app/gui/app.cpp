@@ -422,6 +422,7 @@ void App::startCapture() {
   morse_multi_opts_default(&mo);
   mo.tone_min_hz = tone_min_;
   mo.tone_max_hz = tone_max_;
+  mo.max_active = simultaneous_ ? 0 : 1;
   multi_ = morse_multi_create(table_, static_cast<unsigned int>(rate_), &mo,
                               nullptr, nullptr);
   bool ok = multi_ != nullptr &&
@@ -430,6 +431,8 @@ void App::startCapture() {
     capturing_ = true;
     envelope_.clear();
     spectrum_src_.clear();
+    wf_rows_.clear();
+    wf_peak_ = 1e-6f;
     status_ = use_loopback_ ? "listening to system audio (loopback)"
                             : "listening on selected input";
   } else {
@@ -572,6 +575,11 @@ void App::onFrame() {
       }
       refreshSpectrum();
       refreshStations();
+      // feed the waterfall from the most recent samples
+      if (!spectrum_src_.empty()) {
+        size_t w = spectrum_src_.size() < 2048 ? spectrum_src_.size() : 2048;
+        pushWaterfallRow(spectrum_src_.data() + (spectrum_src_.size() - w), w);
+      }
     }
   }
 }
@@ -611,6 +619,7 @@ void App::decodeFileMulti(const std::string &path) {
   morse_multi_opts_default(&mo);
   mo.tone_min_hz = tone_min_;
   mo.tone_max_hz = tone_max_;
+  mo.max_active = simultaneous_ ? 0 : 1;
   morse_multi_detector_t *md =
       morse_multi_create(table_, pcm.sample_rate, &mo, nullptr, nullptr);
   if (md != nullptr) {
@@ -652,6 +661,23 @@ void App::decodeFileMulti(const std::string &path) {
   }
   mark_regions_.clear();
   audio_.setMarkRegions(mark_regions_);
+
+  // build a full waterfall over the whole file
+  wf_rows_.clear();
+  wf_peak_ = 1e-6f;
+  if (!pcm_.empty()) {
+    size_t winN = 2048;
+    size_t hopN = pcm_.size() > wf_max_rows_ * winN
+                      ? pcm_.size() / wf_max_rows_
+                      : winN;
+    if (hopN < 256) {
+      hopN = 256;
+    }
+    for (size_t off = 0; off + winN <= pcm_.size(); off += hopN) {
+      pushWaterfallRow(pcm_.data() + off, winN);
+    }
+  }
+
   morse_pcm_free(&pcm);
   status_ = std::to_string(stations_.size()) + " station(s) from " + path;
 }
@@ -1004,12 +1030,31 @@ void App::drawDecodeTab() {
       } else if (restart && capturing_) {
         startCapture();
       }
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Simultaneous stations", &simultaneous_)) {
+        if (capturing_) {
+          startCapture(); // rebuild detector in the new mode
+        } else if (!std::string(path_buf_.data()).empty() && !stations_.empty()) {
+          decodeFileMulti(path_buf_.data());
+        }
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("(?)");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Off: follow only the strongest tone at a time - best when "
+            "stations take turns.\nOn: decode several overlapping stations "
+            "in parallel.");
+      }
 
-      sectionLabel("Spectrum");
-      drawSpectrum(110);
+      sectionLabel("Tone view");
+      ImGui::Checkbox("Waterfall", &show_waterfall_);
+      drawSpectrum(80);
+      if (show_waterfall_) {
+        drawWaterfall(190);
+      }
       if (capturing_) {
-        ImGui::ProgressBar(std::min(1.0f, live_power_), ImVec2(-1, 0),
-                           "level");
+        ImGui::ProgressBar(std::min(1.0f, live_power_), ImVec2(-1, 0), "level");
       }
 
       sectionLabel("Stations");
@@ -1017,7 +1062,7 @@ void App::drawDecodeTab() {
         ImGui::TextDisabled(
             "Each detected station (by pitch) is decoded separately.");
       }
-      ImGui::BeginChild("stations", ImVec2(-1, 160), ImGuiChildFlags_Borders);
+      ImGui::BeginChild("stations", ImVec2(-1, 140), ImGuiChildFlags_Borders);
       for (const auto &s : stations_) {
         ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
                            "%.0f Hz  -  %.0f WPM", s.hz, s.wpm);
@@ -1460,6 +1505,150 @@ void App::drawTimeline(float height) {
     if (capturing_) {
       ImGui::SetScrollHereY(1.0f); // follow live
     }
+  }
+  ImGui::EndChild();
+}
+
+// Push one spectrogram line: FFT the window, fold it into kWfBins columns over
+// the watched band, and store it normalized against a slowly-decaying peak.
+void App::pushWaterfallRow(const float *samples, size_t n) {
+  if (samples == nullptr || n < 256) {
+    return;
+  }
+  size_t win = 1;
+  while (win * 2 <= n && win < 8192) {
+    win *= 2;
+  }
+  std::vector<double> mag(win / 2);
+  if (morse_real_spectrum(samples, win, mag.data()) != 0) {
+    return;
+  }
+  double binHz = (double)rate_ / (double)win;
+  double f0 = tone_min_ > 0 ? tone_min_ : 100.0;
+  double f1 = tone_max_ > f0 ? tone_max_ : 3000.0;
+  std::array<float, kWfBins> row;
+  float rowmax = 1e-6f;
+  for (int c = 0; c < kWfBins; ++c) {
+    double lo = f0 + (f1 - f0) * c / kWfBins;
+    double hi = f0 + (f1 - f0) * (c + 1) / kWfBins;
+    size_t k0 = (size_t)(lo / binHz);
+    size_t k1 = (size_t)(hi / binHz);
+    if (k1 <= k0) {
+      k1 = k0 + 1;
+    }
+    double m = 0.0;
+    for (size_t k = k0; k < k1 && k < win / 2; ++k) {
+      if (mag[k] > m) {
+        m = mag[k]; // peak-hold within the column reads cleaner than averaging
+      }
+    }
+    row[c] = (float)m;
+    if (row[c] > rowmax) {
+      rowmax = row[c];
+    }
+  }
+  // track a decaying global peak so the colour scale adapts to signal level
+  if (rowmax > wf_peak_) {
+    wf_peak_ = rowmax;
+  } else {
+    wf_peak_ = wf_peak_ * 0.995f + rowmax * 0.005f;
+  }
+  float norm = wf_peak_ > 1e-6f ? 1.0f / wf_peak_ : 1.0f;
+  for (int c = 0; c < kWfBins; ++c) {
+    float v = row[c] * norm;
+    if (v > 1.0f) {
+      v = 1.0f;
+    }
+    row[c] = std::sqrt(v); // gamma for visibility of weak signals
+  }
+  wf_rows_.push_back(row);
+  if (wf_rows_.size() > wf_max_rows_) {
+    wf_rows_.erase(wf_rows_.begin(),
+                   wf_rows_.begin() + (wf_rows_.size() - wf_max_rows_));
+  }
+}
+
+// Classic SDR waterfall colour ramp: dark -> blue -> cyan -> green -> yellow ->
+// red -> white, for intensity v in [0,1].
+static ImU32 waterfallColor(float v) {
+  if (v < 0.0f) {
+    v = 0.0f;
+  }
+  if (v > 1.0f) {
+    v = 1.0f;
+  }
+  float r, g, b;
+  if (v < 0.25f) {
+    float t = v / 0.25f;
+    r = 0.0f;
+    g = 0.0f;
+    b = 0.3f + 0.7f * t;
+  } else if (v < 0.5f) {
+    float t = (v - 0.25f) / 0.25f;
+    r = 0.0f;
+    g = t;
+    b = 1.0f - t;
+  } else if (v < 0.7f) {
+    float t = (v - 0.5f) / 0.2f;
+    r = t;
+    g = 1.0f;
+    b = 0.0f;
+  } else if (v < 0.9f) {
+    float t = (v - 0.7f) / 0.2f;
+    r = 1.0f;
+    g = 1.0f - t;
+    b = 0.0f;
+  } else {
+    float t = (v - 0.9f) / 0.1f;
+    r = 1.0f;
+    g = t;
+    b = t;
+  }
+  return IM_COL32((int)(r * 255), (int)(g * 255), (int)(b * 255), 255);
+}
+
+void App::drawWaterfall(float height) {
+  ImGui::BeginChild("waterfall", ImVec2(-1, height), ImGuiChildFlags_Borders);
+  ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImVec2 avail = ImGui::GetContentRegionAvail();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  // background
+  dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+                    IM_COL32(8, 8, 14, 255));
+  if (wf_rows_.empty()) {
+    ImGui::TextDisabled("Waterfall: frequency across, time scrolling down.");
+    ImGui::EndChild();
+    return;
+  }
+  int rows = (int)wf_rows_.size();
+  float cw = avail.x / (float)kWfBins;
+  float rh = avail.y / (float)wf_max_rows_;
+  if (rh < 1.0f) {
+    rh = 1.0f;
+  }
+  // newest row at the top; older rows scroll downward
+  for (int r = 0; r < rows; ++r) {
+    const std::array<float, kWfBins> &row = wf_rows_[rows - 1 - r];
+    float y = origin.y + (float)r * rh;
+    if (y > origin.y + avail.y) {
+      break;
+    }
+    for (int c = 0; c < kWfBins; ++c) {
+      float x = origin.x + (float)c * cw;
+      dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw + 0.6f, y + rh + 0.6f),
+                        waterfallColor(row[c]));
+    }
+  }
+  // frequency ticks along the top
+  double f0 = tone_min_ > 0 ? tone_min_ : 100.0;
+  double f1 = tone_max_ > f0 ? tone_max_ : 3000.0;
+  for (int t = 0; t <= 4; ++t) {
+    float fx = origin.x + avail.x * t / 4.0f;
+    char lbl[16];
+    std::snprintf(lbl, sizeof(lbl), "%.0f", f0 + (f1 - f0) * t / 4.0);
+    dl->AddLine(ImVec2(fx, origin.y), ImVec2(fx, origin.y + 5),
+                IM_COL32(180, 180, 200, 160));
+    dl->AddText(ImVec2(fx + 2, origin.y + 2), IM_COL32(200, 200, 220, 200), lbl);
   }
   ImGui::EndChild();
 }

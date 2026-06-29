@@ -91,6 +91,7 @@ TEST_BEGIN("multi-station");
   morse_multi_opts_default(&opts);
   opts.tone_min_hz = 300.0;
   opts.tone_max_hz = 1500.0;
+  opts.max_active = 8; /* simultaneous mode: decode both overlapping stations */
   md = morse_multi_create(table, rate, &opts, NULL, NULL);
   CHECK(md != NULL);
 

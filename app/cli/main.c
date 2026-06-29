@@ -38,6 +38,7 @@ typedef struct cli_opts {
   morse_serial_keyline_t keyline; /* which control line keys the rig          */
   unsigned short port;            /* cwdaemon UDP port                        */
   int hex;                        /* winkeyer: print hex instead of raw bytes */
+  int multi;                      /* stations: decode simultaneous tones      */
 } cli_opts;
 
 static void opts_init(cli_opts *o) {
@@ -58,6 +59,7 @@ static void opts_init(cli_opts *o) {
   o->keyline = MORSE_SERIAL_KEY_DTR;
   o->port = 6789u; /* cwdaemon default */
   o->hex = 0;
+  o->multi = 0; /* default: follow the single strongest tone */
 }
 
 static void usage(FILE *f, const char *prog) {
@@ -69,7 +71,8 @@ static void usage(FILE *f, const char *prog) {
           "  decode MORSE...     Decode Morse to text  (reads stdin if none)\n"
           "  wav    TEXT...      Render text to a WAV file (use -o FILE)\n"
           "  listen FILE.wav     Decode Morse audio from a WAV file\n"
-          "  stations FILE.wav   Decode many simultaneous stations from a WAV\n"
+          "  stations FILE.wav   Decode stations from a WAV (strongest tone;\n"
+          "                      add --multi for simultaneous stations)\n"
           "  table               Print the codebook reference chart\n"
           "  tree [depth]        Print the codebook as a dot/dash tree\n"
           "  serial TEXT...      Key TEXT out a serial port's RTS/DTR line\n"
@@ -250,6 +253,8 @@ static int parse_options(int argc, char **argv, int start, cli_opts *o) {
       o->port = (unsigned short)atoi(argv[i]);
     } else if (!strcmp(a, "--hex")) {
       o->hex = 1;
+    } else if (!strcmp(a, "--multi") || !strcmp(a, "--simultaneous")) {
+      o->multi = 1;
     } else {
       fprintf(stderr, "unknown option '%s'\n", a);
       return -1;
@@ -446,6 +451,7 @@ static int cmd_stations(int argc, char **argv, int pos, const cli_opts *o) {
   }
   t = morse_table_create(o->variant);
   morse_multi_opts_default(&mo);
+  mo.max_active = o->multi ? 0 : 1; /* --multi decodes simultaneous stations */
   md = morse_multi_create(t, pcm.sample_rate, &mo, NULL, NULL);
   if (md == NULL) {
     morse_table_destroy(t);

@@ -12,7 +12,9 @@
 
 #include "morse/morse.h"
 
+#include <array>
 #include <string>
+#include <vector>
 #include <utility>
 #include <vector>
 
@@ -58,6 +60,8 @@ private:
   void refreshStations();
   void pullTimeline(morse_multi_detector_t *md);
   void drawTimeline(float height);
+  void pushWaterfallRow(const float *samples, size_t n);
+  void drawWaterfall(float height);
   void drawTree();
   void startKeyer();
   void stopKeyer();
@@ -151,6 +155,15 @@ private:
   };
   std::vector<StationView> stations_;
   std::vector<morse_multi_event_t> timeline_; // chronological cross-station log
+  bool simultaneous_ = false; // decode several tones at once vs strongest only
+  bool show_waterfall_ = true; // tone view: waterfall vs line spectrum
+
+  // waterfall / spectrogram history (ring of normalized magnitude rows)
+  static const int kWfBins = 160;
+  std::vector<std::array<float, 160>> wf_rows_;
+  size_t wf_max_rows_ = 160;
+  float wf_peak_ = 1e-6f; // decaying global peak for normalization
+
   bool tree_view_ = true; // Reference tab: tree vs table
 
   // CW interface panel

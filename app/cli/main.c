@@ -302,7 +302,7 @@ static int cmd_encode(int argc, char **argv, int pos, const cli_opts *o) {
   morse_encode_opts_default(&eo);
   eo.dit = o->dit;
   eo.dah = o->dah;
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   st = morse_encode_string(t, text, &eo, out);
   if (st == MORSE_OK) {
     printf("%s\n", FUNC_str_cstr(out));
@@ -329,7 +329,7 @@ static int cmd_decode(int argc, char **argv, int pos, const cli_opts *o) {
   morse_decode_opts_default(&dopt);
   dopt.dit = o->dit;
   dopt.dah = o->dah;
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   st = morse_decode_string(t, code, &dopt, out);
   if (st == MORSE_OK) {
     printf("%s\n", FUNC_str_cstr(out));
@@ -375,7 +375,7 @@ static int cmd_listen(int argc, char **argv, int pos, const cli_opts *o) {
   if (o->tone_hz > 0.0) {
     det.tone_hz = o->tone_hz; /* hint; 0 keeps auto */
   }
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   st = morse_wav_to_text(argv[pos], o->variant, &det, out);
   if (st == MORSE_OK) {
     printf("%s\n", FUNC_str_cstr(out));

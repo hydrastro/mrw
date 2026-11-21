@@ -2,7 +2,7 @@
 
 This document goes a level deeper than the README on how the core library is
 put together and why. The whole core is pure C11 and depends only on
-`hydrastro/ds` and the C math library.
+DSA (currently `hydrastro/ds`, moving to `hydrastro/dsa`) and the C math library.
 
 ## Layering
 
@@ -72,7 +72,7 @@ into a `morse_durations_t` of five element lengths:
 `morse_encode_string()` produces a printable pattern with configurable dot/dash
 glyphs and element/letter/word separators. `morse_encode_elements()` instead
 appends a sequence of **timed elements** to a caller-owned `ds` list. Each
-`morse_element_t` embeds a `list_node_t` as its first member (the intrusive
+`morse_element_t` embeds a `ds_list_node_t` as its first member (the intrusive
 pattern) and records its symbol, `start_ms`, and `duration_ms`. Unknown input
 characters are handled by policy: skip, replace, or fail.
 
@@ -131,6 +131,10 @@ heavyweight codec dependency.
 See the README section on the counting allocator. The key design point is that
 the per-block size header is present in *both* instrumented and
 non-instrumented builds, so enabling diagnostics is purely additive and never
-changes allocation layout or behavior. Each `ds` container is created with the
-matching allocator/deallocator pair so its nodes are counted and freed
-consistently. The round-trip tests assert the counters return to zero.
+changes allocation layout or behavior. Core-owned DSA containers borrow a process-lifetime `ds_context_t` backed by
+the same allocation/calloc/realloc/free callbacks. The context disables its
+shared last-error slot; operation statuses remain available. Caller-owned
+lists and strings retain their original contexts. The round-trip and
+multi-station tests assert that counted allocations balance after teardown.
+Diagnostics must be enabled before creating core objects; the counters remain
+process-wide and are not thread-safe.

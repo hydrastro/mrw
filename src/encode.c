@@ -196,7 +196,7 @@ morse_status_t morse_encode_string(const morse_table_t *table,
 
 static void free_element_node(ds_list_node_t *n) { morse_xfree(n); }
 
-void morse_elements_free(list_t *list) {
+void morse_elements_free(ds_list_t *list) {
   if (list == NULL) {
     return;
   }
@@ -204,7 +204,7 @@ void morse_elements_free(list_t *list) {
 }
 
 /* Append one symbol element to the list, advancing *cursor_ms. */
-static int push_symbol(list_t *list, const morse_durations_t *d,
+static int push_symbol(ds_list_t *list, const morse_durations_t *d,
                        morse_symbol_t sym, double *cursor_ms) {
   morse_element_t *e = (morse_element_t *)morse_xmalloc(sizeof(*e));
   if (e == NULL) {
@@ -219,7 +219,7 @@ static int push_symbol(list_t *list, const morse_durations_t *d,
 }
 
 /* Append a pattern's marks (with intra gaps) as one character. */
-static int push_pattern(list_t *list, const morse_durations_t *d,
+static int push_pattern(ds_list_t *list, const morse_durations_t *d,
                         const char *pattern, double *cursor_ms) {
   size_t i;
   for (i = 0; pattern[i] != '\0'; i++) {
@@ -240,7 +240,7 @@ morse_status_t morse_encode_elements(const morse_table_t *table,
                                      const char *text,
                                      const morse_durations_t *durations,
                                      morse_unknown_policy_t unknown,
-                                     list_t *out_list, double *total_ms_out) {
+                                     ds_list_t *out_list, double *total_ms_out) {
   const unsigned char *s;
   int emitted_any = 0;
   int pending_word = 0;

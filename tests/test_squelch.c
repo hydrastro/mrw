@@ -11,11 +11,11 @@ static void sink_collect(const char *utf8, void *user) {
   ds_str_append_cstr((ds_str_t *)user, utf8);
 }
 
-static list_t *elements_for(morse_table_t *t, const char *text) {
+static ds_list_t *elements_for(morse_table_t *t, const char *text) {
   morse_timing_t tm;
   morse_durations_t d;
   double total = 0.0;
-  list_t *els = ds_list_create();
+  ds_list_t *els = ds_list_create(NULL);
   morse_timing_default(&tm);
   morse_timing_resolve(&tm, &d);
   morse_encode_elements(t, text, &d, MORSE_UNKNOWN_SKIP, els, &total);
@@ -45,7 +45,7 @@ static float *render(morse_table_t *t, const char *text, double tone,
                      size_t *out_n) {
   morse_synth_opts_t so;
   morse_pcm_t pcm;
-  list_t *els = elements_for(t, text);
+  ds_list_t *els = elements_for(t, text);
   float *buf;
   morse_synth_opts_default(&so);
   so.tone_hz = tone;
@@ -72,7 +72,7 @@ TEST_BEGIN("squelch");
   {
     size_t n = rate * 3;
     float *noise = (float *)malloc(n * sizeof(float));
-    ds_str_t *out = ds_str_create();
+    ds_str_t *out = ds_str_create(NULL);
     for (i = 0; i < n; ++i) {
       seed ^= seed << 13;
       seed ^= seed >> 17;
@@ -89,7 +89,7 @@ TEST_BEGIN("squelch");
   {
     size_t n = 0;
     float *sig = render(t, "PARIS", 700.0, &n);
-    ds_str_t *out = ds_str_create();
+    ds_str_t *out = ds_str_create(NULL);
     decode_live(t, sig, n, 700.0, out);
     CHECK(strcmp(FUNC_str_cstr(out), "PARIS") == 0);
     ds_str_destroy(out);
@@ -102,7 +102,7 @@ TEST_BEGIN("squelch");
     size_t sn = 0, tail = rate * 2, total, k;
     float *sig = render(t, "TEST", 700.0, &sn);
     float *mix = (float *)malloc((sn + tail) * sizeof(float));
-    ds_str_t *out = ds_str_create();
+    ds_str_t *out = ds_str_create(NULL);
     const char *txt;
     total = sn + tail;
     memcpy(mix, sig, sn * sizeof(float));

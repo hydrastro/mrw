@@ -18,6 +18,9 @@
 #include "morse/fft.h"
 #include "morse_alloc.h"
 
+#include <dsa/structures/circular_buffer.h>
+#include <dsa/structures/queue.h>
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,7 +223,7 @@ morse_status_t morse_detect_pcm(const morse_pcm_t *pcm,
   thr_hi = opts->threshold > 0.0 ? opts->threshold : 0.5;
   thr_lo = thr_hi * (opts->hysteresis > 0.0 ? opts->hysteresis : 0.6);
 
-  q = ds_queue_create_alloc(morse_xmalloc, morse_xfree);
+  q = ds_queue_create(morse_dsa_context());
   dec = morse_stream_decoder_create(table, /* initial dit guess; adapts */ 60.0,
                                     sink_to_dsstr, out_text);
   if (!q || !dec) {
@@ -386,9 +389,9 @@ morse_detector_t *morse_detector_create(const morse_table_t *table,
   }
 
   det->window =
-      ds_circular_buffer_create_alloc(det->block, false, morse_xmalloc, morse_xfree);
+      ds_circular_buffer_create(det->block, false, morse_dsa_context());
   det->pool = (sample_node_t *)morse_xmalloc(det->block * sizeof(sample_node_t));
-  det->runs = ds_queue_create_alloc(morse_xmalloc, morse_xfree);
+  det->runs = ds_queue_create(morse_dsa_context());
   det->dec = morse_stream_decoder_create(table, 60.0, sink, user);
   if (!det->window || !det->pool || !det->runs || !det->dec ||
       (det->track && !det->history)) {

@@ -1,7 +1,7 @@
 /*
  * morse/types.h - Fundamental types shared across the morse-deluxe core.
  *
- * The core library is plain C (C89-friendly, like the ds library it builds on)
+ * The core library is C11
  * and is deliberately free of any GUI or audio-backend dependency so it can be
  * unit tested in isolation. Everything user facing is prefixed `morse_`.
  */
@@ -10,10 +10,9 @@
 
 #include <stddef.h>
 
-/* We embed ds intrusive list nodes inside our element struct, so we need the
- * real definition of list_node_t. ds.h pulls in the whole library; that is
- * fine for the core translation units. */
-#include "ds.h"
+/* Public API types: intrusive timed-element lists and output strings. */
+#include <dsa/structures/list.h>
+#include <dsa/structures/str.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,7 +63,7 @@ char morse_symbol_glyph(morse_symbol_t s);
  * element from a node pointer.
  */
 typedef struct morse_element {
-  list_node_t node;        /* MUST be first: ds CAST() relies on it           */
+  ds_list_node_t node;        /* MUST be first: ds CAST() relies on it           */
   morse_symbol_t symbol;
   double duration_ms;      /* resolved duration for this symbol               */
   double start_ms;         /* offset from the start of the stream             */

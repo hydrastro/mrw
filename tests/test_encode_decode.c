@@ -5,7 +5,7 @@
 #include "test_util.h"
 
 static int encode(morse_table_t *t, const char *text, const char *expect) {
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   morse_encode_opts_t o;
   morse_status_t st;
   int ok;
@@ -55,7 +55,7 @@ static void test_unknown_policy(void) {
   morse_encode_opts_t o;
 
   /* '~' has no Morse mapping. SKIP drops it. */
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   morse_encode_opts_default(&o);
   o.unknown = MORSE_UNKNOWN_SKIP;
   CHECK_INT(morse_encode_string(t, "A~B", &o, out), MORSE_OK);
@@ -63,7 +63,7 @@ static void test_unknown_policy(void) {
   ds_str_destroy(out);
 
   /* FAIL stops with an error. */
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   morse_encode_opts_default(&o);
   o.unknown = MORSE_UNKNOWN_FAIL;
   CHECK_INT(morse_encode_string(t, "A~B", &o, out), MORSE_ERR_UNKNOWN_SYMBOL);
@@ -74,7 +74,7 @@ static void test_unknown_policy(void) {
 
 static void test_custom_glyphs(void) {
   morse_table_t *t = morse_table_create(MORSE_VARIANT_INTERNATIONAL_EXT);
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   morse_encode_opts_t o;
   morse_encode_opts_default(&o);
   o.dit = '*';
@@ -87,14 +87,14 @@ static void test_custom_glyphs(void) {
 
 static void test_decode_basic(void) {
   morse_table_t *t = morse_table_create(MORSE_VARIANT_INTERNATIONAL_EXT);
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   morse_decode_opts_t o;
   morse_decode_opts_default(&o);
   CHECK_INT(morse_decode_string(t, "... --- ...", &o, out), MORSE_OK);
   CHECK_STR(FUNC_str_cstr(out), "SOS");
   ds_str_destroy(out);
 
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   CHECK_INT(morse_decode_string(
                 t, ".... . .-.. .-.. --- / .-- --- .-. .-.. -..", &o, out),
             MORSE_OK);
@@ -105,8 +105,8 @@ static void test_decode_basic(void) {
 
 /* Encode then decode must return the (uppercased) original for ASCII text. */
 static void roundtrip(morse_table_t *t, const char *text) {
-  ds_str_t *code = ds_str_create();
-  ds_str_t *back = ds_str_create();
+  ds_str_t *code = ds_str_create(NULL);
+  ds_str_t *back = ds_str_create(NULL);
   morse_encode_opts_t eo;
   morse_decode_opts_t dopt;
   morse_encode_opts_default(&eo);

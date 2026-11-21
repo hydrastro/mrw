@@ -56,10 +56,10 @@ morse_status_t morse_encode_elements(const morse_table_t *table,
                                      const char *text,
                                      const morse_durations_t *durations,
                                      morse_unknown_policy_t unknown,
-                                     list_t *out_list, double *total_ms_out);
+                                     ds_list_t *out_list, double *total_ms_out);
 
 /* Free every element a previous morse_encode_elements call appended. */
-void morse_elements_free(list_t *list);
+void morse_elements_free(ds_list_t *list);
 
 #ifdef __cplusplus
 }

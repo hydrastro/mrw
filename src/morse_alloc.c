@@ -4,8 +4,8 @@
  * Each block carries a header large enough to hold its payload size while
  * preserving max_align_t alignment for the returned pointer. The header lets
  * free()/realloc() know the old size so live-byte accounting stays exact. The
- * counters are process-wide and thread-unsafe by design: the CLI and GUI here
- * are single-threaded, and the panel is purely observational.
+ * counters are process-wide and thread-unsafe; callers using diagnostics must
+ * serialize core allocation activity. The panel is purely observational.
  */
 #include "morse_alloc.h"
 
@@ -69,7 +69,12 @@ static void note_failed(void) {
 }
 
 void *morse_xmalloc(size_t size) {
-  unsigned char *base = (unsigned char *)malloc(MORSE_HDR + size);
+  unsigned char *base;
+  if (size > (size_t)-1 - MORSE_HDR) {
+    note_failed();
+    return NULL;
+  }
+  base = (unsigned char *)malloc(MORSE_HDR + size);
   if (base == NULL) {
     note_failed();
     return NULL;
@@ -102,6 +107,14 @@ void *morse_xrealloc(void *ptr, size_t size) {
 
   if (ptr == NULL) {
     return morse_xmalloc(size);
+  }
+  if (size == 0) {
+    morse_xfree(ptr);
+    return NULL;
+  }
+  if (size > (size_t)-1 - MORSE_HDR) {
+    note_failed();
+    return NULL;
   }
   base = (unsigned char *)ptr - MORSE_HDR;
   old = ((morse_block_header_t *)base)->size;
@@ -144,4 +157,39 @@ void morse_xfree(void *ptr) {
   n = ((morse_block_header_t *)base)->size;
   note_free(n);
   free(base);
+}
+
+/* DSA borrows its context. Static storage avoids dangling allocator pointers
+ * in long-lived tables, detectors and transcripts. Error statuses are returned
+ * by each operation; disable the shared, mutable last-error slot. */
+static void *dsa_alloc(size_t size, void *user) {
+  (void)user;
+  return morse_xmalloc(size);
+}
+
+static void *dsa_calloc(size_t count, size_t size, void *user) {
+  (void)user;
+  return morse_xcalloc(count, size);
+}
+
+static void *dsa_realloc(void *ptr, size_t size, void *user) {
+  (void)user;
+  return morse_xrealloc(ptr, size);
+}
+
+static void dsa_free(void *ptr, void *user) {
+  (void)user;
+  morse_xfree(ptr);
+}
+
+ds_context_t *morse_dsa_context(void) {
+  static ds_context_t context = {
+      .alloc = dsa_alloc,
+      .calloc = dsa_calloc,
+      .realloc = dsa_realloc,
+      .free = dsa_free,
+      .flags = DS_CONTEXT_NO_LAST_ERROR,
+      .resource = DS_RESOURCE_HEAP,
+  };
+  return &context;
 }

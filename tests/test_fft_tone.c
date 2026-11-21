@@ -78,7 +78,7 @@ static void decode_at_tone(double tone_hz, const char *msg) {
   morse_pcm_t pcm;
   morse_detect_opts_t det;
   morse_table_t *table;
-  list_t *els;
+  ds_list_t *els;
   ds_str_t *out;
   const char *got;
   double total_ms = 0.0;
@@ -91,7 +91,7 @@ static void decode_at_tone(double tone_hz, const char *msg) {
   so.sample_rate = 44100;
 
   table = morse_table_create(MORSE_VARIANT_INTERNATIONAL);
-  els = ds_list_create();
+  els = ds_list_create(NULL);
   CHECK_INT(morse_encode_elements(table, msg, &dur, MORSE_UNKNOWN_SKIP, els,
                                   &total_ms),
             MORSE_OK);
@@ -100,7 +100,7 @@ static void decode_at_tone(double tone_hz, const char *msg) {
   morse_elements_free(els);
 
   morse_detect_opts_default(&det); /* tone_hz = 0 => blind auto-detect */
-  out = ds_str_create();
+  out = ds_str_create(NULL);
   morse_detect_pcm(&pcm, table, &det, out, NULL);
   got = FUNC_str_cstr(out);
   CHECK_STR(got, msg);
@@ -133,13 +133,13 @@ static void test_streaming_tracks_tone(void) {
    * the streaming detector in small chunks; tracking should lock the pitch. */
   morse_synth_opts_t so; morse_timing_t tm; morse_durations_t dur;
   morse_pcm_t pcm; morse_detect_opts_t det; morse_table_t *table;
-  list_t *els; morse_detector_t *d; sink_acc acc; double total_ms = 0.0;
+  ds_list_t *els; morse_detector_t *d; sink_acc acc; double total_ms = 0.0;
   size_t off; const char *msg = "TEST";
   memset(&acc, 0, sizeof(acc));
   morse_timing_default(&tm); tm.wpm = 18.0; morse_timing_resolve(&tm, &dur);
   morse_synth_opts_default(&so); so.tone_hz = 1500.0; so.sample_rate = 44100;
   table = morse_table_create(MORSE_VARIANT_INTERNATIONAL);
-  els = ds_list_create();
+  els = ds_list_create(NULL);
   CHECK_INT(morse_encode_elements(table, msg, &dur, MORSE_UNKNOWN_SKIP, els, &total_ms), MORSE_OK);
   morse_pcm_init(&pcm);
   CHECK_INT(morse_synth_render(els, &so, &pcm), MORSE_OK);

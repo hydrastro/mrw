@@ -13,7 +13,7 @@ static float *render(const char *text, double wpm, double tone,
   morse_timing_t tm;
   morse_durations_t dur;
   morse_synth_opts_t so;
-  list_t *els;
+  ds_list_t *els;
   double total_ms = 0.0;
   morse_pcm_t pcm;
   float *buf;
@@ -26,7 +26,7 @@ static float *render(const char *text, double wpm, double tone,
   so.tone_hz = tone;
   so.amplitude = 0.6;
 
-  els = ds_list_create();
+  els = ds_list_create(NULL);
   morse_encode_elements(t, text, &dur, MORSE_UNKNOWN_SKIP, els, &total_ms);
   morse_pcm_init(&pcm);
   morse_synth_render(els, &so, &pcm);
@@ -64,6 +64,7 @@ static int contains_squashed(const char *hay, const char *needle) {
 }
 
 TEST_BEGIN("multi-station");
+morse_diagnostics_enable();
 {
   const unsigned int rate = 44100;
   const char *textA = "PARIS";
@@ -333,5 +334,13 @@ TEST_BEGIN("multi-station");
   morse_table_destroy(table);
   free(carrier);
   free(keyed);
+}
+{
+  morse_alloc_stats_t stats;
+  CHECK(morse_diagnostics_get(&stats));
+  CHECK(stats.allocations > 0);
+  CHECK_INT(stats.allocations, stats.frees);
+  CHECK_INT(stats.bytes_live, 0);
+  CHECK_INT(stats.failed_allocations, 0);
 }
 TEST_END()

@@ -1,13 +1,17 @@
 {
   "nodes": {
-    "ds": {
-      "flake": false,
+    "dsa": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
       "locked": {
-        "lastModified": 1780346483,
-        "narHash": "sha256-RZtWDYuNeCf8lIfhf0l7H+PLTR8knUX2cYZneBDQ7K0=",
+        "lastModified": 1795130373,
+        "narHash": "sha256-q23XMvYg6GEA5m9xyTwgJu1QglDTz+6PzMJAWHIPDVU=",
         "owner": "hydrastro",
         "repo": "ds",
-        "rev": "9e3224b3aef9b6e271d02b76ff671b1db4301601",
+        "rev": "909b4a462410b190db2488cb0fac7fca088af81c",
         "type": "github"
       },
       "original": {
@@ -67,7 +71,7 @@
     },
     "root": {
       "inputs": {
-        "ds": "ds",
+        "dsa": "dsa",
         "imgui-src": "imgui-src",
         "miniaudio-src": "miniaudio-src",
         "nixpkgs": "nixpkgs"

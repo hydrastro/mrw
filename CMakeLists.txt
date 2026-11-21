@@ -1,16 +1,16 @@
 # morse-deluxe - CMake build
 #
 # Targets:
-#   morse              static core library (C11, depends only on ds)
+#   morse              static core library (C11, depends only on DSA)
 #   morsec             command-line tool       (option MORSE_BUILD_CLI)
 #   morse-deluxe-gui   Dear ImGui desktop app  (option MORSE_BUILD_GUI)
 #   ctest              unit tests              (option MORSE_BUILD_TESTS)
 #
 # The core library and CLI have no GUI dependencies and always build. The GUI is
 # gated behind MORSE_BUILD_GUI so a headless machine can still build everything
-# else. Dependencies (ds, Dear ImGui, GLFW, miniaudio) are either found on the
+# else. GUI dependencies (Dear ImGui, GLFW, miniaudio) are either found on the
 # system / supplied via -D*_DIR (what the Nix flake does) or fetched from GitHub.
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 project(morse_deluxe VERSION 1.0.0 LANGUAGES C CXX)
 
 option(MORSE_BUILD_CLI "Build the morsec command-line tool" ON)
@@ -30,58 +30,50 @@ endif()
 include(FetchContent)
 
 # --------------------------------------------------------------------------
-# ds - hydrastro/ds intrusive data-structure library (no CMake of its own).
-#
-# ds ships some Unicode-table sources that are produced by a code-generator
-# step in its Makefile. libmorse does not use any of that machinery, so rather
-# than reproduce ds's codegen we compile exactly the closure of modules that
-# libmorse actually references. This list is the transitive set required by the
-# library's use of ds_list / ds_hash_table / ds_trie / ds_circular_buffer /
-# ds_queue / ds_str; it is self-contained and needs no generated headers.
-# (To build the *entire* ds library instead, use ds's own Makefile or its Nix
-# flake, which run the generator.)
+# DSA is built and installed separately with its own build system.
+# DSA_ROOT may name a built checkout or an install prefix. Otherwise prefer
+# the installed dsa.pc package, falling back to normal header/library lookup.
 # --------------------------------------------------------------------------
-set(DS_ROOT "" CACHE PATH "Path to a checkout of hydrastro/ds (else fetched)")
-if(DS_ROOT STREQUAL "")
-  FetchContent_Declare(ds
-    GIT_REPOSITORY https://github.com/hydrastro/ds.git
-    GIT_TAG master)
-  FetchContent_GetProperties(ds)
-  if(NOT ds_POPULATED)
-    FetchContent_Populate(ds)
-  endif()
-  set(DS_ROOT "${ds_SOURCE_DIR}")
+set(DS_ROOT "" CACHE PATH "Legacy alias for DSA_ROOT")
+set(DSA_ROOT "${DS_ROOT}" CACHE PATH "Built DSA checkout or install prefix")
+find_package(PkgConfig QUIET)
+if(DSA_ROOT STREQUAL "" AND PkgConfig_FOUND)
+  pkg_check_modules(DSA QUIET IMPORTED_TARGET dsa)
 endif()
-message(STATUS "morse-deluxe: using ds from ${DS_ROOT}")
-
-set(DS_MODULES
-    circular_buffer context diagnostic error hash_table
-    list queue status str trie)
-set(DS_SOURCES "")
-foreach(m ${DS_MODULES})
-  if(NOT EXISTS "${DS_ROOT}/lib/${m}.c")
-    message(FATAL_ERROR "Expected ds source ${DS_ROOT}/lib/${m}.c not found. "
-                        "Set -DDS_ROOT=/path/to/ds.")
+if(TARGET PkgConfig::DSA)
+  add_library(DSA::DSA ALIAS PkgConfig::DSA)
+else()
+  if(DSA_ROOT)
+    find_path(DSA_INCLUDE_DIR dsa/structures/list.h
+      PATHS "${DSA_ROOT}/include" NO_DEFAULT_PATH)
+    find_library(DSA_LIBRARY NAMES dsa
+      PATHS "${DSA_ROOT}/build" "${DSA_ROOT}/lib" "${DSA_ROOT}/lib64"
+      NO_DEFAULT_PATH)
+  else()
+    find_path(DSA_INCLUDE_DIR dsa/structures/list.h)
+    find_library(DSA_LIBRARY NAMES dsa)
   endif()
-  list(APPEND DS_SOURCES "${DS_ROOT}/lib/${m}.c")
-endforeach()
-add_library(ds STATIC ${DS_SOURCES})
-target_include_directories(ds PUBLIC "${DS_ROOT}")
-set_target_properties(ds PROPERTIES POSITION_INDEPENDENT_CODE ON)
-# ds is third-party C89-era code: build it quietly.
-if(NOT MSVC)
-  target_compile_options(ds PRIVATE -w)
+  include(FindPackageHandleStandardArgs)
+  find_package_handle_standard_args(DSA REQUIRED_VARS DSA_INCLUDE_DIR DSA_LIBRARY
+    FAIL_MESSAGE "DSA is required. Install it or set DSA_ROOT to a built checkout or install prefix.")
+  if(NOT DSA_FOUND)
+    message(FATAL_ERROR "Cannot build libmorse without DSA")
+  endif()
+  add_library(DSA::DSA UNKNOWN IMPORTED)
+  set_target_properties(DSA::DSA PROPERTIES
+    IMPORTED_LOCATION "${DSA_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${DSA_INCLUDE_DIR}")
 endif()
 
 # --------------------------------------------------------------------------
-# libmorse - the core (pure C, depends only on ds + libm)
+# libmorse - the core (pure C, depends only on DSA + libm)
 # --------------------------------------------------------------------------
 file(GLOB MORSE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
 add_library(morse STATIC ${MORSE_SOURCES})
 target_include_directories(morse
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src") # private morse_alloc.h
-target_link_libraries(morse PUBLIC ds)
+target_link_libraries(morse PUBLIC DSA::DSA)
 if(NOT MSVC)
   target_compile_options(morse PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -108,6 +100,7 @@ endif()
 if(MORSE_BUILD_TESTS)
   enable_testing()
   set(MORSE_TESTS
+      test_allocator
       test_timing test_table test_encode_decode test_synth_detect
       test_roundtrip test_fft_tone test_cw test_multi test_filter test_squelch)
   foreach(t ${MORSE_TESTS})
@@ -143,11 +136,9 @@ if(MORSE_BUILD_GUI)
   if(IMGUI_DIR STREQUAL "")
     FetchContent_Declare(imgui
       GIT_REPOSITORY https://github.com/ocornut/imgui.git
-      GIT_TAG v1.91.5)
-    FetchContent_GetProperties(imgui)
-    if(NOT imgui_POPULATED)
-      FetchContent_Populate(imgui)
-    endif()
+      GIT_TAG v1.91.5
+      SOURCE_SUBDIR _morse_fetch_only)
+    FetchContent_MakeAvailable(imgui)
     set(IMGUI_DIR "${imgui_SOURCE_DIR}")
   endif()
   message(STATUS "morse-deluxe: using Dear ImGui from ${IMGUI_DIR}")
@@ -157,11 +148,9 @@ if(MORSE_BUILD_GUI)
   if(MINIAUDIO_DIR STREQUAL "")
     FetchContent_Declare(miniaudio
       GIT_REPOSITORY https://github.com/mackron/miniaudio.git
-      GIT_TAG master)
-    FetchContent_GetProperties(miniaudio)
-    if(NOT miniaudio_POPULATED)
-      FetchContent_Populate(miniaudio)
-    endif()
+      GIT_TAG master
+      SOURCE_SUBDIR _morse_fetch_only)
+    FetchContent_MakeAvailable(miniaudio)
     set(MINIAUDIO_DIR "${miniaudio_SOURCE_DIR}")
   endif()
   message(STATUS "morse-deluxe: using miniaudio from ${MINIAUDIO_DIR}")
@@ -203,7 +192,7 @@ endif()
 # install
 # --------------------------------------------------------------------------
 include(GNUInstallDirs)
-install(TARGETS morse ds ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS morse ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/morse"
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(MORSE_BUILD_CLI)

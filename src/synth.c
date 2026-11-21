@@ -166,11 +166,11 @@ static morse_status_t render_symbol(morse_pcm_t *pcm,
   return MORSE_OK;
 }
 
-morse_status_t morse_synth_render(const list_t *elements,
+morse_status_t morse_synth_render(const ds_list_t *elements,
                                   const morse_synth_opts_t *opts,
                                   morse_pcm_t *pcm) {
   morse_synth_opts_t defaults;
-  list_node_t *it;
+  ds_list_node_t *it;
   double phase = 0.0;
 
   if (!elements || !pcm) {

@@ -17,10 +17,9 @@
 #endif
 
 #include "morse/cw.h"
+#include "morse_alloc.h"
 
 #include "morse/encode.h"
-
-#include "ds.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,7 +152,7 @@ morse_status_t morse_cw_key_text(const morse_table_t *table, const char *text,
   if (!table || !text || !durations || !key || !delay) {
     return MORSE_ERR_NULL;
   }
-  els = ds_list_create();
+  els = ds_list_create(morse_dsa_context());
   if (!els) {
     return MORSE_ERR_ALLOC;
   }

@@ -2,22 +2,25 @@
  * morse_alloc.h - Private allocation primitives for the morse core.
  *
  * NOT part of the installed public API. Every heap allocation the core makes -
- * both its own buffers and, via the ds *_create_alloc constructors, the nodes
- * of the ds containers it builds - goes through these. By default they are thin
+ * both its own buffers and, via a DSA context, the nodes
+ * of the DSA containers it builds - goes through these. By default they are thin
  * wrappers over malloc/free and add only a small size-tracking header. When
  * morse_diagnostics_enable() has been called they additionally tally live/peak
  * bytes and allocation counts, which the GUI's diagnostics panel surfaces. The
  * header is always present so that enabling diagnostics never changes the
  * pointer layout, keeping alloc/free symmetric regardless of mode.
  *
- * These signatures match what ds's *_create_alloc constructors expect
- * (void *(*)(size_t) and void (*)(void *)), so morse_xmalloc / morse_xfree can
- * be handed to ds_list_create_alloc, ds_queue_create_alloc, etc. directly.
+ * The process-lifetime context below adapts these functions to DSA's allocator
+ * callbacks. It outlives every core container that borrows it. Caller-owned
+ * containers keep the context chosen by their caller.
  */
 #ifndef MORSE_ALLOC_PRIVATE_H
 #define MORSE_ALLOC_PRIVATE_H
 
 #include <stddef.h>
+#include <dsa/core/context.h>
+
+ds_context_t *morse_dsa_context(void);
 
 void *morse_xmalloc(size_t size);
 void *morse_xcalloc(size_t count, size_t size);

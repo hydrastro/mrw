@@ -192,7 +192,7 @@ static int spawn_channel(morse_multi_detector_t *d, double freq, double snr) {
       memset(c, 0, sizeof(*c));
       return -1;
     }
-    c->text = ds_str_create();
+    c->text = ds_str_create(morse_dsa_context());
     c->used = 1;
     c->id = d->next_id++;
     c->tone_hz = freq;

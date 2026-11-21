@@ -6,10 +6,10 @@
 #include "morse/timing.h"
 #include "test_util.h"
 
-static list_t *elements_for(morse_table_t *t, const char *text, double *total) {
+static ds_list_t *elements_for(morse_table_t *t, const char *text, double *total) {
   morse_timing_t tm;
   morse_durations_t d;
-  list_t *els = ds_list_create();
+  ds_list_t *els = ds_list_create(NULL);
   morse_timing_default(&tm);
   morse_timing_resolve(&tm, &d);
   morse_encode_elements(t, text, &d, MORSE_UNKNOWN_SKIP, els, total);
@@ -21,7 +21,7 @@ static void test_synth_shape(void) {
   morse_synth_opts_t so;
   morse_pcm_t pcm;
   double total = 0.0;
-  list_t *els;
+  ds_list_t *els;
   size_t i;
   float peak = 0.0f;
 
@@ -74,9 +74,9 @@ static void detect_text(const char *text, double tone, int noise) {
   morse_detect_opts_t det;
   morse_pcm_t pcm;
   morse_envelope_t env;
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   double total = 0.0;
-  list_t *els = elements_for(t, text, &total);
+  ds_list_t *els = elements_for(t, text, &total);
 
   morse_synth_opts_default(&so);
   so.tone_hz = tone;

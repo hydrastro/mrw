@@ -1,7 +1,7 @@
 # morsw
 
 **morsw** is a deliberately over-engineered Morse code **encoder and decoder**,
-written in C on top of the [`hydrastro/ds`](https://github.com/hydrastro/ds)
+written in C on top of the [DSA](https://github.com/hydrastro/ds)
 intrusive data-structure library, with a command-line tool, a clean
 [Dear ImGui](https://github.com/ocornut/imgui) desktop application, real-time
 audio via [miniaudio](https://github.com/mackron/miniaudio), optional
@@ -73,7 +73,7 @@ every byte it allocates.
   live / peak / total bytes and a balanced alloc/free count.
 - **Three front-ends** — `libmorse` (C library), `morsec` (CLI), and
   `morse-deluxe-gui` (a tabbed Dear ImGui app).
-- **Portable** — core + CLI build everywhere with only `ds` + libm; the GUI runs
+- **Portable** — core + CLI need only DSA + libm; the GUI runs
   on Linux, macOS, and Windows.
 
 ---
@@ -120,28 +120,48 @@ make            # core library, CLI, and tests
 make check      # build + run the unit tests
 make gui        # the Dear ImGui desktop application
 make everything # all of the above
-make deps       # fetch ds / Dear ImGui / miniaudio into third_party/
+make deps       # fetch GUI sources (Dear ImGui / miniaudio) into third_party/
 make install    # install libs, headers, binaries under PREFIX (default /usr/local)
 make help       # list targets and options
 ```
 
-The core library and CLI depend only on `ds` + libm and build on any platform.
-If you do not already have a `ds` checkout, run `make deps` (it fetches `ds`,
-Dear ImGui, and miniaudio into `third_party/`), or point at an existing one:
+Build and install DSA first, or point at a separately built checkout. The
+migration targets DSA commit `909b4a462410b190db2488cb0fac7fca088af81c`:
 
 ```sh
-make DS_ROOT=/path/to/ds            # use an existing ds checkout
-make gui DS_ROOT=/path/to/ds        # likewise for the GUI
+git clone https://github.com/hydrastro/ds.git ../dsa
+git -C ../dsa checkout 909b4a462410b190db2488cb0fac7fca088af81c
+make -C ../dsa
+make DSA_ROOT=../dsa
+make check DSA_ROOT=../dsa
 ```
+
+An installed DSA is found through `pkg-config dsa`; set `PKG_CONFIG_PATH` for a
+custom prefix. `DSA_ROOT` also accepts an install prefix. The old `DS_ROOT`
+variable remains an alias, but the old DS API is no longer supported. `libmorse.a`
+contains only Morse objects; consumers must link DSA too, for example with
+`-lmorse $(pkg-config --libs dsa) -lm` and DSA's compiler flags.
+Client code should use `ds_list_t` / `ds_list_node_t` and pass a context (or
+`NULL` for the default allocator) to `ds_list_create` and `ds_str_create`.
+
+The repository is still named `hydrastro/ds`. After it moves, use
+`https://github.com/hydrastro/dsa.git` for clones, change the `dsa` input URL in
+`flake.nix` to `github:hydrastro/dsa`, and run `nix flake update dsa`.
+
+For the GUI, run `make deps` to fetch the two source dependencies and install
+GLFW/OpenGL development packages, then run `make gui DSA_ROOT=../dsa`.
+Dependencies and build outputs are ignored; there are no Git submodules.
 
 Common options (pass on the command line):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DS_ROOT` | `third_party/ds` | location of a `hydrastro/ds` checkout |
+| `DSA_ROOT` | unset | built DSA checkout or install prefix; otherwise use pkg-config |
+| `DSA_CFLAGS` / `DSA_LIBS` | detected | override DSA compiler/linker flags |
+| `BUILD` | `build` | build output directory |
 | `IMGUI_DIR` | `third_party/imgui` | Dear ImGui source tree (GUI) |
 | `MINIAUDIO_DIR` | `third_party/miniaudio` | dir containing `miniaudio.h` (GUI) |
-| `GUI_GLFW` | `system` | `system` (pkg-config) or `vendor` GLFW |
+| `GLFW_CFLAGS` / `GLFW_LIBS` | pkg-config | override GLFW compiler/linker flags |
 | `PREFIX` | `/usr/local` | install prefix |
 | `CC` / `CXX` | `cc` / `c++` | compilers |
 
@@ -160,13 +180,13 @@ Windows (which uses Win32) or macOS (which uses Cocoa). So on Windows you do not
 need X11 at all — just build the GUI with MinGW:
 
 ```sh
-# In an MSYS2 / MinGW-w64 shell, with mingw-w64 GLFW installed (or GUI_GLFW=vendor)
+# In an MSYS2 / MinGW-w64 shell, with DSA and mingw-w64 GLFW installed
 make gui
 ```
 
 On Linux the GUI needs the usual X11 development packages (e.g. on Debian/Ubuntu
 `libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev`) plus
-`libgl1-mesa-dev`, and ALSA/PulseAudio headers are not required (miniaudio
+`libglfw3-dev libgl1-mesa-dev`, and ALSA/PulseAudio headers are not required (miniaudio
 `dlopen`s them at runtime). `ffmpeg` is optional and only used for importing or
 exporting non-WAV audio.
 
@@ -179,9 +199,11 @@ nix run .#morsec -- encode "CQ CQ DE K1ABC <AR>"
 nix develop               # dev shell with make/ffmpeg/clang-tools
 ```
 
-The flake pins `ds`, Dear ImGui, and miniaudio as inputs and wraps the GUI so
-the dlopen'd audio backends and `ffmpeg` resolve at runtime. The lock file is
-generated on first build.
+The flake pins the built DSA package, Dear ImGui, and miniaudio and wraps the
+GUI so audio backends and `ffmpeg` resolve at runtime. The committed lock file
+records those versions. Its supported systems follow DSA's flake, currently
+`x86_64-linux`; Make and CMake remain available for other platforms supported
+by DSA and the GUI dependencies.
 
 > **No audio from a `make`-built binary on NixOS?** miniaudio loads ALSA /
 > PulseAudio by `dlopen`-ing them at runtime, so a binary you run *directly*
@@ -194,13 +216,17 @@ generated on first build.
 ### With CMake (alternative)
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release -DDSA_ROOT=../dsa
+cmake --build build-cmake -j
+ctest --test-dir build-cmake --output-on-failure
 ```
 
+CMake 3.18 or newer is required. DSA must already be built or installed; only
+GUI sources are fetched automatically. Set `-DMORSE_BUILD_GUI=OFF` for a
+headless build. Use separate output directories for Make and CMake.
+
 Options mirror the Makefile: `MORSE_BUILD_CLI`, `MORSE_BUILD_GUI`,
-`MORSE_BUILD_TESTS` (all `ON`), and `DS_ROOT` / `IMGUI_DIR` / `MINIAUDIO_DIR`.
+`MORSE_BUILD_TESTS` (all `ON`), and `DSA_ROOT` / `IMGUI_DIR` / `MINIAUDIO_DIR`.
 
 ---
 
@@ -345,11 +371,14 @@ buffer** for samples and a `ds` **queue** for runs; output strings are `ds`
 
 ### The counting-allocator pattern
 
-`ds` containers take an allocator pair through their `*_create_alloc`
-constructors. `libmorse` passes its own instrumented `morse_xmalloc` /
-`morse_xfree`, which carry a small aligned header on every block for exact byte
-accounting. The header layout is identical whether or not diagnostics are
-enabled, so turning instrumentation on never changes allocation behavior:
+DSA containers borrow a `ds_context_t` with allocation, zero-allocation,
+resize, and release callbacks. Core-owned containers share a process-lifetime
+context backed by `morse_xmalloc`, `morse_xcalloc`, `morse_xrealloc`, and
+`morse_xfree`. This includes both codebook indexes and per-channel transcripts.
+Caller-owned lists and output strings keep their caller's allocator. Every
+counted block carries an aligned size header for exact byte accounting. Enable
+diagnostics before allocating core objects; the counters are process-wide and
+are not thread-safe:
 
 ```c
 morse_diagnostics_enable();
@@ -360,13 +389,15 @@ if (morse_diagnostics_get(&s))
            s.bytes_live, s.bytes_peak, s.allocations, s.frees);
 ```
 
-The tests assert the counters return to zero after every round-trip.
+The tests assert that live bytes and allocation counts balance after the
+round-trip and multi-station pipelines are destroyed.
 
 ---
 
 ## Tests
 
-Ten suites (`make check`, or `ctest`): timing math, codebook + variant gating,
+Eleven suites (`make check`, or `ctest`): DSA allocation/reallocation ownership
+and failure handling, timing math, codebook + variant gating,
 encode/decode (prosigns, accents, policies, custom glyphs), per-sample
 synthesis/detection bounds with clean and noisy signals, full
 `text → WAV-on-disk → text` round-trips, the FFT and dominant-tone estimator,
@@ -380,5 +411,5 @@ assertions and checking the allocator balances to zero.
 
 ## License
 
-MIT. See [`LICENSE`](./LICENSE). Dear ImGui, miniaudio, GLFW, and `hydrastro/ds`
+MIT. See [`LICENSE`](./LICENSE). Dear ImGui, miniaudio, GLFW, and DSA
 are each under their own licenses.

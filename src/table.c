@@ -12,6 +12,9 @@
 #include "morse/table.h"
 #include "morse_alloc.h"
 
+#include <dsa/structures/hash_table.h>
+#include <dsa/structures/trie.h>
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,7 +220,7 @@ morse_table_t *morse_table_create(morse_variant_t variant) {
   }
   t->variant = variant;
 
-  t->decode = ds_trie_create_hash_alloc(2, morse_xmalloc, morse_xfree);
+  t->decode = ds_trie_create_hash(2, morse_dsa_context());
   if (t->decode == NULL) {
     morse_xfree(t);
     return NULL;
@@ -227,10 +230,7 @@ morse_table_t *morse_table_create(morse_variant_t variant) {
   cfg.hash = cp_hash;
   cfg.compare = cp_cmp;
   cfg.capacity = 97u;
-  /* The config constructor manages this table with malloc/free internally;
-   * that is fine - each ds container frees with the allocator it was built
-   * with. The encode table is built once at startup, so it is not part of the
-   * dynamic allocation activity the diagnostics panel is meant to surface. */
+  cfg.context = morse_dsa_context();
   t->encode = ds_hash_table_create_config(&cfg);
   if (t->encode == NULL) {
     ds_trie_destroy(t->decode);

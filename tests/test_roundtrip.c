@@ -3,11 +3,27 @@
 #include "test_util.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#ifdef _WIN32
+#include <process.h>
+#define test_getpid _getpid
+#else
+#include <unistd.h>
+#define test_getpid getpid
+#endif
 
-static void rt(const char *text, const char *path, double wpm, double tone) {
+static void rt(const char *text, const char *name, double wpm, double tone) {
   morse_timing_t tm;
   morse_synth_opts_t so;
-  ds_str_t *out = ds_str_create();
+  char path[4096];
+  const char *tmp = getenv("TMPDIR");
+  int len = snprintf(path, sizeof(path), "%s/%s-%ld.wav", tmp ? tmp : ".",
+                     name, (long)test_getpid());
+  CHECK(len > 0 && (size_t)len < sizeof(path));
+  if (len <= 0 || (size_t)len >= sizeof(path)) {
+    return;
+  }
+  ds_str_t *out = ds_str_create(NULL);
   morse_timing_default(&tm);
   tm.wpm = wpm;
   morse_synth_opts_default(&so);
@@ -24,10 +40,10 @@ static void rt(const char *text, const char *path, double wpm, double tone) {
 }
 
 static void test_full_stack(void) {
-  rt("HELLO WORLD", "/tmp/mrt1.wav", 20.0, 600.0);
-  rt("CQ CQ DE K1ABC", "/tmp/mrt2.wav", 22.0, 650.0);
-  rt("THE QUICK BROWN FOX 123", "/tmp/mrt3.wav", 18.0, 700.0);
-  rt("PARIS CODEX", "/tmp/mrt4.wav", 25.0, 550.0);
+  rt("HELLO WORLD", "mrt1", 20.0, 600.0);
+  rt("CQ CQ DE K1ABC", "mrt2", 22.0, 650.0);
+  rt("THE QUICK BROWN FOX 123", "mrt3", 18.0, 700.0);
+  rt("PARIS CODEX", "mrt4", 25.0, 550.0);
 }
 
 static void test_version(void) {

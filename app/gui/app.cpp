@@ -173,7 +173,7 @@ void App::doEncode() {
   }
   morse_encode_opts_t o;
   morse_encode_opts_default(&o);
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   morse_status_t st = morse_encode_string(table_, text_in_.data(), &o, out);
   if (st == MORSE_OK) {
     code_out_ = takeStr(out);
@@ -189,7 +189,7 @@ void App::doDecodeText() {
   }
   morse_decode_opts_t o;
   morse_decode_opts_default(&o);
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   morse_status_t st = morse_decode_string(table_, code_in_.data(), &o, out);
   if (st == MORSE_OK) {
     text_out_ = takeStr(out);
@@ -223,7 +223,7 @@ void App::doRender() {
   so.add_noise = noise_ > 0.0f ? 1 : 0;
   so.noise_amplitude = noise_;
 
-  list_t *els = ds_list_create();
+  ds_list_t *els = ds_list_create(NULL);
   total_ms_ = 0.0;
   if (morse_encode_elements(table_, text_in_.data(), &dur, MORSE_UNKNOWN_SKIP,
                             els, &total_ms_) != MORSE_OK) {
@@ -232,7 +232,7 @@ void App::doRender() {
   }
 
   mark_regions_.clear();
-  for (list_node_t *it = els->head; it != els->nil; it = it->next) {
+  for (ds_list_node_t *it = els->head; it != els->nil; it = it->next) {
     const morse_element_t *e = reinterpret_cast<const morse_element_t *>(it);
     if (morse_symbol_is_mark(e->symbol)) {
       std::size_t a = static_cast<std::size_t>(e->start_ms / 1000.0 * rate_);
@@ -298,7 +298,7 @@ void App::listenFile(const std::string &path) {
   fillDetectOpts(&det);
   morse_envelope_t env;
   morse_envelope_init(&env);
-  ds_str_t *out = ds_str_create();
+  ds_str_t *out = ds_str_create(NULL);
   morse_status_t st = morse_detect_pcm(&pcm, table_, &det, out, &env);
   listen_out_ = takeStr(out);
 

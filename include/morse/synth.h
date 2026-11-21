@@ -44,7 +44,7 @@ double morse_pcm_duration_sec(const morse_pcm_t *pcm);
 
 /* Render a ds list of morse_element_t into freshly allocated PCM.
  * `pcm` must be init'd (or zeroed); existing contents are freed first. */
-morse_status_t morse_synth_render(const list_t *elements,
+morse_status_t morse_synth_render(const ds_list_t *elements,
                                   const morse_synth_opts_t *opts,
                                   morse_pcm_t *pcm);
 

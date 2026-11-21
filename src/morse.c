@@ -34,7 +34,7 @@ morse_status_t morse_text_to_wav(const char *text, morse_variant_t variant,
   morse_timing_t tm;
   morse_durations_t dur;
   morse_synth_opts_t so;
-  list_t *elements;
+  ds_list_t *elements;
   morse_pcm_t pcm;
   double total_ms = 0.0;
   morse_status_t st;
@@ -65,7 +65,7 @@ morse_status_t morse_text_to_wav(const char *text, morse_variant_t variant,
     morse_synth_opts_default(&so);
   }
 
-  elements = ds_list_create();
+  elements = ds_list_create(morse_dsa_context());
   if (elements == NULL) {
     morse_table_destroy(table);
     return MORSE_ERR_ALLOC;

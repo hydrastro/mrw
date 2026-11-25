@@ -4,10 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    # DSA builds its own library, including generated sources. After the
-    # repository rename, change this URL to github:hydrastro/dsa.
     dsa = {
-      url = "github:hydrastro/ds";
+      url = "github:hydrastro/dsa";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
